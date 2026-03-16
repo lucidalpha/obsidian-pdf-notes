@@ -1,0 +1,10 @@
+{
+  "id": "pdf-notes",
+  "name": "PDF.notes",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Annotate PDFs with smooth ink drawings and shape tools directly within Obsidian.",
+  "author": "Awin",
+  "authorUrl": "https://x.com/DerMittlereWeg",
+  "isDesktopOnly": true
+}

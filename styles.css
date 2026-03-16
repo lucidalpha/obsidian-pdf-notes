@@ -1,0 +1,79 @@
+/* PDF.notes Plugin – Styles */
+.pdf-notes-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #1e1e2e;
+}
+
+.pdf-notes-toolbar {
+    display: flex;
+    align-items: center;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    padding: 2px 6px;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.pdf-notes-toolbar::-webkit-scrollbar {
+    display: none;
+}
+
+.pdf-notes-toolbar .pdf-tool-btn {
+    background: #313244;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    color: #cdd6f4;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 6px;
+    transition: all 0.2s ease;
+    min-width: 30px;
+    height: 28px;
+}
+
+.pdf-notes-toolbar .pdf-tool-btn:hover {
+    background: #45475a;
+    color: #fff;
+    transform: translateY(-1px);
+}
+
+/* Zen Mode (Fullscreen) */
+.pdf-notes-container.pdf-notes-zen-mode {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 9999;
+    background: #1e1e2e;
+}
+
+.pdf-notes-zen-mode .view-header {
+    display: none !important;
+}
+
+/* Hide Scrollbar */
+.pdf-notes-scroll {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none;  /* IE and Edge */
+}
+
+.pdf-notes-scroll::-webkit-scrollbar {
+    display: none; /* Chrome, Safari and Opera */
+}
+
+.pdf-notes-menu {
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    animation: pdf-fade-in 0.15s ease-out;
+}
+
+@keyframes pdf-fade-in {
+    from { opacity: 0; transform: translateY(-5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
