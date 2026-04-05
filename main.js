@@ -20267,11 +20267,14 @@ var DEFAULT_SETTINGS = {
   newPdfFolder: "",
   allowTouch: true,
   penSideButtonTool: "eraser",
-  enabledTools: ["nav", "zoom", "scroll", "select", "lasso", "pen", "eraser", "text", "image", "snip", "paste", "delete", "rect", "circle", "line", "arrow", "undo", "zen", "insert", "remove", "save", "flatten"],
+  enabledTools: ["nav", "zoom", "scroll", "select", "lasso", "pen", "eraser", "text", "image", "snip", "paste", "delete", "rect", "circle", "line", "arrow", "undo", "redo", "zen", "insert", "remove", "flatten"],
   textFont: "Inter",
   textSize: 16,
   iconType: "lucide",
   toolbarPosition: "top",
+  themeMode: "dark",
+  imageSource: "filesystem",
+  imageVaultFolder: "",
   toolIcons: {
     prev: "\u25C0",
     next: "\u25B6",
@@ -20292,6 +20295,7 @@ var DEFAULT_SETTINGS = {
     line: "\u2571",
     arrow: "\u2192",
     undo: "\u21A9",
+    redo: "\u21AA",
     zen: "\u26F6",
     insert: "\u{1F4C4}",
     remove: "\u{1F5D1}\uFE0F",
@@ -20319,11 +20323,94 @@ var LUCIDE_ICONS = {
   zoomOut: "minus-circle",
   zoomIn: "plus-circle",
   undo: "undo-2",
+  redo: "redo-2",
   insert: "file-plus",
   remove: "file-minus",
   zen: "maximize",
   save: "save",
   flatten: "flame"
+};
+function getThemeColors(mode) {
+  if (mode === "light")
+    return {
+      bg: "#eff1f5",
+      toolbarBg: "#e6e9ef",
+      border: "#ccd0da",
+      btnBg: "#ccd0da",
+      btnBorder: "#bcc0cc",
+      btnHoverBg: "#bcc0cc",
+      mutedText: "#6c6f85",
+      text: "#4c4f69",
+      accent: "#1e66f5",
+      accentText: "#eff1f5",
+      menuBg: "#eff1f5",
+      menuBorder: "#bcc0cc",
+      menuShadow: "rgba(0,0,0,0.15)",
+      inputBg: "#ccd0da",
+      valueText: "#1e66f5",
+      selectText: "#4c4f69",
+      saveBg: "#40a02b",
+      saveFg: "#eff1f5",
+      flattenBg: "#fe640b",
+      flattenFg: "#eff1f5",
+      deleteBg: "#d20f39",
+      deleteFg: "#eff1f5",
+      cropBg: "#df8e1d",
+      cropFg: "#eff1f5",
+      pageLbl: "#bcc0cc",
+      selStroke: "#1e66f5"
+    };
+  return {
+    bg: "#1e1e2e",
+    toolbarBg: "#181825",
+    border: "#313244",
+    btnBg: "#313244",
+    btnBorder: "#45475a",
+    btnHoverBg: "#45475a",
+    mutedText: "#a6adc8",
+    text: "#cdd6f4",
+    accent: "#89b4fa",
+    accentText: "#1e1e2e",
+    menuBg: "#1e1e2e",
+    menuBorder: "#45475a",
+    menuShadow: "rgba(0,0,0,0.5)",
+    inputBg: "#313244",
+    valueText: "#89b4fa",
+    selectText: "#cdd6f4",
+    saveBg: "#a6e3a1",
+    saveFg: "#1e1e2e",
+    flattenBg: "#fab387",
+    flattenFg: "#1e1e2e",
+    deleteBg: "#f38ba8",
+    deleteFg: "#1e1e2e",
+    cropBg: "#f9e2af",
+    cropFg: "#1e1e2e",
+    pageLbl: "#45475a",
+    selStroke: "#89b4fa"
+  };
+}
+var VaultImagePicker = class extends import_obsidian.FuzzySuggestModal {
+  constructor(app, folder, onChoose) {
+    super(app);
+    this.folder = folder ? folder.replace(/\/+$/, "") : "";
+    this.onChoose = onChoose;
+    this.setPlaceholder(this.folder ? `Search image in "${this.folder}"...` : "Search image in vault...");
+  }
+  getItems() {
+    return this.app.vault.getFiles().filter((f) => {
+      if (!/\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(f.extension ? "." + f.extension : f.path))
+        return false;
+      if (this.folder && !f.path.startsWith(this.folder + "/"))
+        return false;
+      return true;
+    });
+  }
+  getItemText(item) {
+    return item.path;
+  }
+  onChooseItem(item) {
+    this.onChoose(item);
+  }
 };
 var VIEW_TYPE = "pdf-notes-view";
 var PAGE_TYPES = [
@@ -20551,6 +20638,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     this.strokes = {};
     this.drawing = false;
     this.curStroke = null;
+    this.undoStack = [];
+    this.redoStack = [];
     this.pageCanvases = {};
     this.saveTimer = null;
     this.visiblePage = 1;
@@ -20582,12 +20671,12 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     this._targetScale = null;
     this.isHandScrolling = false;
     this.handScrollStart = null;
-    window.addEventListener("touchmove", (e) => {
+    this._touchMoveGuard = (e) => {
       if (this.drawing) {
         e.preventDefault();
         e.stopImmediatePropagation();
       }
-    }, { passive: false });
+    };
   }
   getViewType() {
     return VIEW_TYPE;
@@ -20617,26 +20706,29 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("pdf-notes-container");
+    this._theme = getThemeColors(this.plugin.settings.themeMode || "dark");
+    const T = this._theme;
     const isRight = this.plugin.settings.toolbarPosition === "right";
-    root.style.cssText = `display:flex;height:100%;background:#1e1e2e;flex-direction:${isRight ? "row" : "column"};`;
+    root.style.cssText = `display:flex;height:100%;background:${T.bg};flex-direction:${isRight ? "row" : "column"};`;
     const tb = root.createDiv();
     tb.addClass("pdf-notes-toolbar");
     if (isRight) {
-      tb.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;background:#181825;border-left:1px solid #313244;flex-shrink:0;width:40px;order:2;";
+      tb.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 3px;background:${T.toolbarBg};border-left:1px solid ${T.border};flex-shrink:0;width:36px;order:2;`;
     } else {
-      tb.style.cssText = "display:flex;align-items:center;gap:2px;padding:4px 8px;background:#181825;border-bottom:1px solid #313244;flex-shrink:0;height:40px;";
+      tb.style.cssText = `display:flex;align-items:center;gap:1px;padding:3px 6px;background:${T.toolbarBg};border-bottom:1px solid ${T.border};flex-shrink:0;height:36px;`;
     }
     this.buildToolbar(tb);
     this.scrollEl = root.createDiv();
     this.scrollEl.addClass("pdf-notes-scroll");
-    this.scrollEl.style.cssText = "position:relative;flex:1;overflow:auto;display:flex;flex-direction:column;align-items:center;padding:20px;gap:14px;background:#1e1e2e;transform-origin: center center;touch-action: pan-x pan-y;";
+    this.scrollEl.style.cssText = `position:relative;flex:1;overflow:auto;display:flex;flex-direction:column;align-items:center;padding:20px;gap:14px;background:${T.bg};transform-origin: center center;touch-action: pan-x pan-y;`;
     if (isRight)
       this.scrollEl.style.order = 1;
     this.setupGlobalEvents();
     this.statusEl = root.createDiv();
-    this.statusEl.style.cssText = `flex-shrink:0;padding:3px 10px;background:#181825;border-top:1px solid #313244;font-size:11px;color:#a6adc8;${isRight ? "position:absolute;bottom:0;right:50px;border-radius:4px 0 0 0;z-index:20;" : ""}`;
+    this.statusEl.style.cssText = `flex-shrink:0;padding:2px 8px;background:${T.toolbarBg};border-top:1px solid ${T.border};font-size:10px;color:${T.mutedText};${isRight ? "position:absolute;bottom:0;right:42px;border-radius:4px 0 0 0;z-index:20;" : ""}`;
   }
   buildToolbar(tb) {
+    const T = this._theme;
     const b = (lbl, title, idOrFn, fnOrXtra, maybeXtra = "") => {
       let id = null, fn, xtra = "";
       if (typeof idOrFn === "function") {
@@ -20668,6 +20760,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           el.textContent = lbl;
         }
       }
+      el.setAttribute("aria-label", title);
       el.title = title;
       if (xtra)
         el.style.cssText += xtra;
@@ -20696,27 +20789,27 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       }
     };
     if (this.plugin.settings.enabledTools.includes("nav")) {
-      b("prev", "Previous", "nav", () => this.navPage(-1));
+      b("prev", "Previous Page", "nav", () => this.navPage(-1));
       this.pageInfo = tb.createSpan();
-      this.pageInfo.style.cssText = "font-size:11px;color:#a6adc8;min-width:35px;text-align:center;font-weight:600;";
-      b("next", "Next", "nav", () => this.navPage(1));
+      this.pageInfo.style.cssText = `font-size:10px;color:${T.mutedText};min-width:28px;text-align:center;font-weight:600;`;
+      b("next", "Next Page", "nav", () => this.navPage(1));
       this.div(tb);
     }
     if (this.plugin.settings.enabledTools.includes("zoom")) {
       b("zoomOut", "Zoom Out", "zoom", () => this.zoom(-0.25));
       this.zoomInfo = tb.createSpan();
-      this.zoomInfo.style.cssText = "font-size:11px;color:#a6adc8;min-width:35px;text-align:center;font-weight:600;";
+      this.zoomInfo.style.cssText = `font-size:10px;color:${T.mutedText};min-width:30px;text-align:center;font-weight:600;`;
       b("zoomIn", "Zoom In", "zoom", () => this.zoom(0.25));
       this.div(tb);
     }
     if (this.plugin.settings.enabledTools.includes("scroll"))
-      this.btnHand = b("scroll", "Scroll", "scroll", () => this.setTool("scroll"));
+      this.btnHand = b("scroll", "Scroll / Hand Tool", "scroll", () => this.setTool("scroll"));
     if (this.plugin.settings.enabledTools.includes("select"))
-      this.btnSelect = b("select", "Select", "select", () => this.setTool("select"));
+      this.btnSelect = b("select", "Select / Move", "select", () => this.setTool("select"));
     if (this.plugin.settings.enabledTools.includes("lasso"))
-      this.btnLasso = b("lasso", "Lasso", "lasso", () => this.setTool("lasso"));
+      this.btnLasso = b("lasso", "Lasso Selection", "lasso", () => this.setTool("lasso"));
     if (this.plugin.settings.enabledTools.includes("pen")) {
-      this.btnPen = b("pen", "Pen & Color", "pen", () => {
+      this.btnPen = b("pen", "Pen \u2013 Click again for color, width & opacity", "pen", () => {
         const wasPen = this.tool === "pen";
         this.setTool("pen");
         if (wasPen)
@@ -20724,16 +20817,16 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       });
       this.btnPen.classList.add("has-dropdown");
       this._penMenu = document.body.createDiv({ cls: "pdf-notes-menu" });
-      this._penMenu.style.cssText = "position:fixed;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:12px;min-width:160px;gap:10px;";
+      this._penMenu.style.cssText = `position:fixed;background:${T.menuBg};border:1px solid ${T.menuBorder};border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px ${T.menuShadow};padding:12px;min-width:160px;gap:10px;`;
       const createRow = (label) => {
         const r = this._penMenu.createDiv({ style: "display:flex;flex-direction:column;gap:4px;" });
         const l = r.createDiv({ style: "display:flex;justify-content:space-between;align-items:center;" });
-        l.createSpan({ text: label, style: "font-size:10px;color:#a6adc8;font-weight:bold;text-transform:uppercase;" });
-        const v = l.createSpan({ style: "font-size:10px;color:#89b4fa;" });
+        l.createSpan({ text: label, style: `font-size:10px;color:${T.mutedText};font-weight:bold;text-transform:uppercase;` });
+        const v = l.createSpan({ style: `font-size:10px;color:${T.valueText};` });
         return { r, v };
       };
       const { r: cR } = createRow("Color");
-      this.colorInput = cR.createEl("input", { type: "color", style: "width:100%;height:24px;padding:1px;background:#313244;border:1px solid #45475a;border-radius:4px;cursor:pointer;" });
+      this.colorInput = cR.createEl("input", { type: "color", style: `width:100%;height:24px;padding:1px;background:${T.inputBg};border:1px solid ${T.btnBorder};border-radius:4px;cursor:pointer;` });
       this.colorInput.value = this.color;
       this.colorInput.oninput = (e) => {
         this.color = e.target.value;
@@ -20763,7 +20856,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       };
     }
     if (this.plugin.settings.enabledTools.includes("eraser")) {
-      this.btnErase = b("eraser", "Eraser", "eraser", () => {
+      this.btnErase = b("eraser", "Eraser \u2013 Click again for mode & size", "eraser", () => {
         const wasE = this.tool === "eraser";
         this.setTool("eraser");
         if (wasE)
@@ -20771,10 +20864,34 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       });
       this.btnErase.classList.add("has-dropdown");
       this._eraseMenu = document.body.createDiv({ cls: "pdf-notes-menu" });
-      this._eraseMenu.style.cssText = "position:fixed;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:12px;min-width:140px;";
-      const r = this._eraseMenu.createDiv({ style: "display:flex;flex-direction:column;gap:4px;" });
-      r.createSpan({ text: "Eraser Size", style: "font-size:10px;color:#a6adc8;font-weight:bold;" });
-      const sIn = r.createEl("input", { type: "range", style: "width:100%;" });
+      this._eraseMenu.style.cssText = `position:fixed;background:${T.menuBg};border:1px solid ${T.menuBorder};border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px ${T.menuShadow};padding:12px;min-width:160px;gap:10px;`;
+      const modeRow = this._eraseMenu.createDiv({ style: "display:flex;flex-direction:column;gap:4px;" });
+      modeRow.createSpan({ text: "Mode", style: `font-size:10px;color:${T.mutedText};font-weight:bold;text-transform:uppercase;` });
+      const modeWrap = modeRow.createDiv({ style: "display:flex;gap:4px;" });
+      const mkBtn = (label, val) => {
+        const btn = modeWrap.createEl("button");
+        btn.textContent = label;
+        btn.style.cssText = `flex:1;padding:4px 6px;border-radius:4px;border:1px solid ${T.btnBorder};cursor:pointer;font-size:11px;font-weight:600;`;
+        btn.addEventListener("click", () => {
+          this.plugin.settings.eraserMode = val;
+          this.plugin.saveSettings();
+          updateModeBtns();
+        });
+        return btn;
+      };
+      const btnStroke = mkBtn("Stroke", "stroke");
+      const btnPixel = mkBtn("Pixel", "pixel");
+      const updateModeBtns = () => {
+        const isStroke = (this.plugin.settings.eraserMode || "stroke") === "stroke";
+        btnStroke.style.background = isStroke ? T.accent : T.btnBg;
+        btnStroke.style.color = isStroke ? T.accentText : T.text;
+        btnPixel.style.background = !isStroke ? T.accent : T.btnBg;
+        btnPixel.style.color = !isStroke ? T.accentText : T.text;
+      };
+      updateModeBtns();
+      const sizeRow = this._eraseMenu.createDiv({ style: "display:flex;flex-direction:column;gap:4px;" });
+      sizeRow.createSpan({ text: "Size", style: `font-size:10px;color:${T.mutedText};font-weight:bold;text-transform:uppercase;` });
+      const sIn = sizeRow.createEl("input", { type: "range", style: "width:100%;" });
       sIn.min = "5";
       sIn.max = "100";
       sIn.value = String(this.plugin.settings.eraserSize);
@@ -20784,7 +20901,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       };
     }
     if (this.plugin.settings.enabledTools.includes("text")) {
-      this.btnText = b("text", "Text options", "text", () => {
+      this.btnText = b("text", "Text \u2013 Click again for color, size & font", "text", () => {
         const wasText = this.tool === "text";
         this.setTool("text");
         if (wasText)
@@ -20792,16 +20909,16 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       });
       this.btnText.classList.add("has-dropdown");
       this._textMenu = document.body.createDiv({ cls: "pdf-notes-menu" });
-      this._textMenu.style.cssText = "position:fixed;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:12px;min-width:180px;gap:10px;";
+      this._textMenu.style.cssText = `position:fixed;background:${T.menuBg};border:1px solid ${T.menuBorder};border-radius:8px;display:none;flex-direction:column;z-index:10000;box-shadow:0 8px 24px ${T.menuShadow};padding:12px;min-width:180px;gap:10px;`;
       const createRow = (label) => {
         const r = this._textMenu.createDiv({ style: "display:flex;flex-direction:column;gap:4px;" });
         const l = r.createDiv({ style: "display:flex;justify-content:space-between;align-items:center;" });
-        l.createSpan({ text: label, style: "font-size:10px;color:#a6adc8;font-weight:bold;text-transform:uppercase;" });
-        const v = l.createSpan({ style: "font-size:10px;color:#89b4fa;" });
+        l.createSpan({ text: label, style: `font-size:10px;color:${T.mutedText};font-weight:bold;text-transform:uppercase;` });
+        const v = l.createSpan({ style: `font-size:10px;color:${T.valueText};` });
         return { r, v };
       };
       const { r: cR } = createRow("Text Color");
-      const textColorInput = cR.createEl("input", { type: "color", style: "width:100%;height:24px;padding:1px;background:#313244;border:1px solid #45475a;border-radius:4px;cursor:pointer;" });
+      const textColorInput = cR.createEl("input", { type: "color", style: `width:100%;height:24px;padding:1px;background:${T.inputBg};border:1px solid ${T.btnBorder};border-radius:4px;cursor:pointer;` });
       textColorInput.value = this.color;
       textColorInput.oninput = (e) => {
         this.color = e.target.value;
@@ -20821,7 +20938,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this.plugin.saveSettings();
       };
       const { r: fR } = createRow("Font Family");
-      const fontIn = fR.createEl("select", { style: "width:100%;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:12px;" });
+      const fontIn = fR.createEl("select", { style: `width:100%;background:${T.inputBg};color:${T.selectText};border:1px solid ${T.btnBorder};border-radius:4px;font-size:12px;` });
       ["Inter", "Roboto", "Open Sans", "Arial", "Times New Roman", "Courier New", "Georgia"].forEach((f) => {
         const opt = fontIn.createEl("option", { text: f, value: f });
         if (f === this.plugin.settings.textFont)
@@ -20844,18 +20961,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       };
     }
     if (this.plugin.settings.enabledTools.includes("image"))
-      this.btnImg = b("image", "Image", "image", () => this.setTool("image"));
+      this.btnImg = b("image", "Insert Image", "image", () => this.setTool("image"));
     if (this.plugin.settings.enabledTools.includes("snip"))
-      this.btnSnip = b("snip", "Snip", "snip", () => this.setTool("snip"));
+      this.btnSnip = b("snip", "Snip / Screenshot", "snip", () => this.setTool("snip"));
     if (this.plugin.settings.enabledTools.includes("paste"))
-      b("paste", "Paste", () => this.pasteFromClipboard());
+      b("paste", "Paste from Clipboard", () => this.pasteFromClipboard());
     this.div(tb);
     const enabledShapes = ["rect", "circle", "line", "arrow"].filter((t) => this.plugin.settings.enabledTools.includes(t));
     if (enabledShapes.length > 0) {
-      this.btnShapes = b(enabledShapes[0], "Shapes", "shapes", () => this.toggleMenu(this._shapeMenu, this.btnShapes));
+      this.btnShapes = b(enabledShapes[0], "Shapes \u2013 Click to select", "shapes", () => this.toggleMenu(this._shapeMenu, this.btnShapes));
       this.btnShapes.classList.add("has-dropdown");
       this._shapeMenu = document.body.createDiv({ cls: "pdf-notes-menu" });
-      this._shapeMenu.style.cssText = "position:fixed;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;display:none;padding:5px;z-index:10000;gap:4px;";
+      this._shapeMenu.style.cssText = `position:fixed;background:${T.menuBg};border:1px solid ${T.menuBorder};border-radius:8px;display:none;padding:5px;z-index:10000;gap:4px;`;
       enabledShapes.forEach((s) => {
         const sb = b(s, s, s, () => {
           this.setTool(s);
@@ -20864,54 +20981,44 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this._shapeMenu.appendChild(sb);
       });
     }
+    if (this.plugin.settings.enabledTools.includes("delete")) {
+      this.btnDelete = b("delete", "Delete Selection", "delete", () => this.deleteSelected());
+    }
     this.div(tb);
     b("undo", "Undo", "undo", () => this.undo());
-    b("zen", "Zen Mode", "zen", () => this.toggleZen());
+    b("redo", "Redo", "redo", () => this.redo());
+    b("zen", "Zen Mode (Fullscreen)", "zen", () => this.toggleZen());
     this.div(tb);
     b("insert", "Insert Page", "insert", () => this.openInsertModal());
     b("remove", "Delete Page", "remove", () => this.openDeleteModal());
     const sp = tb.createDiv();
     sp.style.flex = "1";
-    this.btnSaveAnnot = b("save", "Save Annotations", "save", () => this.saveAsAnnotations());
-    this.btnSaveAnnot.style.background = "#a6e3a1";
-    this.btnSaveAnnot.style.color = "#1e1e2e";
-    this.btnFlatten = b("flatten", "Flatten PDF", "flatten", () => this.flattenToPdf());
-    this.btnFlatten.style.background = "#fab387";
-    this.btnFlatten.style.color = "#1e1e2e";
-    if (this.selectedElements.length > 0 && this.plugin.settings.enabledTools.includes("delete")) {
-      this.div(tb);
-      const btnDel = tb.createEl("button");
-      if (this.plugin.settings.iconType === "lucide") {
-        (0, import_obsidian.setIcon)(btnDel, "trash-2");
-        btnDel.createSpan({ text: " Delete", attr: { style: "margin-left:4px;" } });
-      } else {
-        btnDel.textContent = "\u274C Delete";
-      }
-      btnDel.style.cssText = "padding:4px 10px;background:#f38ba8;border:none;border-radius:5px;color:#1e1e2e;font-weight:700;font-size:12px;cursor:pointer;margin-left:8px;box-shadow: 0 2px 5px rgba(0,0,0,0.2);display:flex;align-items:center;";
-      btnDel.onclick = () => this.deleteSelected();
-      const first = this.selectedElements[0].s;
-      if (first.type === "image") {
-        const btnCrop = tb.createEl("button");
-        if (this.plugin.settings.iconType === "lucide") {
-          (0, import_obsidian.setIcon)(btnCrop, "scissors");
-          btnCrop.createSpan({ text: " Crop", attr: { style: "margin-left:4px;" } });
-        } else {
-          btnCrop.textContent = "\u2702\uFE0F Crop";
-        }
-        btnCrop.style.cssText = "padding:4px 10px;background:#f9e2af;border:none;border-radius:5px;color:#1e1e2e;font-weight:700;font-size:12px;cursor:pointer;margin-left:8px;box-shadow: 0 2px 5px rgba(0,0,0,0.2);display:flex;align-items:center;";
-        btnCrop.onclick = () => this.cropSelected();
-      }
-    }
+    this.btnFlatten = b("flatten", "Flatten PDF (Burn In)", "flatten", () => this.flattenToPdf());
+    this.btnFlatten.style.background = T.flattenBg;
+    this.btnFlatten.style.color = T.flattenFg;
   }
   div(p) {
     const isRight = this.plugin.settings.toolbarPosition === "right";
+    const T = this._theme || getThemeColors(this.plugin.settings.themeMode || "dark");
     const d = p.createDiv();
-    d.style.cssText = isRight ? "width:16px;height:1px;background:#313244;margin:4px 0;" : "width:1px;height:18px;background:#313244;margin:0 4px;";
+    d.style.cssText = isRight ? `width:14px;height:1px;background:${T.border};margin:3px 0;opacity:0.5;` : `width:1px;height:14px;background:${T.border};margin:0 3px;opacity:0.5;`;
   }
   toggleZen() {
     var _a, _b;
-    const root = this.contentEl.querySelector(".pdf-notes-container");
+    const root = this.contentEl.closest(".pdf-notes-container") || this.contentEl;
     const isZen = root.classList.toggle("pdf-notes-zen-mode");
+    if (isZen) {
+      this._zenOrigParent = root.parentElement;
+      this._zenOrigNext = root.nextSibling;
+      document.body.appendChild(root);
+    } else if (this._zenOrigParent) {
+      if (this._zenOrigNext)
+        this._zenOrigParent.insertBefore(root, this._zenOrigNext);
+      else
+        this._zenOrigParent.appendChild(root);
+      this._zenOrigParent = null;
+      this._zenOrigNext = null;
+    }
     this.app.workspace.iterateAllLeaves((leaf) => {
       if (leaf.view.containerEl.contains(this.contentEl))
         return;
@@ -20933,7 +21040,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     this.updateToolbar();
   }
   updateToolbar() {
-    const A = "#89b4fa", I = "#313244", AF = "#1e1e2e", IF = "#cdd6f4";
+    const T = this._theme || getThemeColors(this.plugin.settings.themeMode || "dark");
+    const A = T.accent, I = T.btnBg, AF = T.accentText, IF = T.text;
     [
       [this.btnHand, "scroll"],
       [this.btnSelect, "select"],
@@ -20971,6 +21079,12 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         }
       }
     }
+    if (this.btnDelete) {
+      const hasSelection = this.selectedElements.length > 0;
+      this.btnDelete.style.background = hasSelection ? T.deleteBg : I;
+      this.btnDelete.style.color = hasSelection ? T.deleteFg : IF;
+      this.btnDelete.style.opacity = hasSelection ? "1" : "0.4";
+    }
     if (this.zoomInfo)
       this.zoomInfo.textContent = Math.round(this.scale * 100) + "%";
     Object.values(this.pageCanvases).forEach(({ inkCanvas }) => this.setCursor(inkCanvas));
@@ -20994,21 +21108,26 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     (_a = this.scrollEl.querySelector(`[data-page="${t}"]`)) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   onScroll() {
-    const pages = this.scrollEl.querySelectorAll("[data-page]");
-    let best = 1, bestV = 0;
-    pages.forEach((p) => {
-      const r = p.getBoundingClientRect();
-      const v = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
-      if (v > bestV) {
-        bestV = v;
-        best = parseInt(p.dataset.page);
+    if (this._scrollRaf)
+      return;
+    this._scrollRaf = requestAnimationFrame(() => {
+      this._scrollRaf = null;
+      const pages = this.scrollEl.querySelectorAll("[data-page]");
+      let best = 1, bestV = 0;
+      pages.forEach((p) => {
+        const r = p.getBoundingClientRect();
+        const v = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+        if (v > bestV) {
+          bestV = v;
+          best = parseInt(p.dataset.page);
+        }
+      });
+      if (best !== this.visiblePage) {
+        this.visiblePage = best;
+        if (this.pageInfo)
+          this.pageInfo.textContent = `${best}/${this.pageCount}`;
       }
     });
-    if (best !== this.visiblePage) {
-      this.visiblePage = best;
-      if (this.pageInfo)
-        this.pageInfo.textContent = `${best}/${this.pageCount}`;
-    }
   }
   zoom(d) {
     var _a;
@@ -21073,7 +21192,20 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       return;
     this._rebuilding = true;
     try {
-      console.log("[PDF.notes] Zoom/Rebuild @", this.scale);
+      for (const numStr of Object.keys(this.pageCanvases)) {
+        const num = parseInt(numStr);
+        const d = this.pageCanvases[num];
+        if (d.pdfCanvas) {
+          d.pdfCanvas.width = 0;
+          d.pdfCanvas.height = 0;
+        }
+        if (d.inkCanvas) {
+          d.inkCanvas.width = 0;
+          d.inkCanvas.height = 0;
+        }
+      }
+      this.pageCanvases = {};
+      this._renderedPages = /* @__PURE__ */ new Set();
       let estW = 600 * this.scale, estH = 800 * this.scale;
       if (!Object.keys(this.pageSizes).length) {
         try {
@@ -21081,6 +21213,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           const vp = p1.getViewport({ scale: this.scale });
           estW = vp.width;
           estH = vp.height;
+          p1.cleanup();
         } catch (e) {
         }
       } else {
@@ -21094,25 +21227,13 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         if (!wrap) {
           wrap = this.scrollEl.createDiv();
           wrap.dataset.page = String(i);
-          wrap.style.cssText = `position:relative;background:#2a2a3e;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-bottom:20px;`;
-          const lbl = wrap.createDiv();
-          lbl.textContent = `Page ${i}`;
-          lbl.style.cssText = "font-size:18px;color:#45475a;font-weight:300;";
         }
-        wrap.style.width = w + "px";
-        wrap.style.height = h + "px";
+        wrap.empty();
+        wrap.style.cssText = `position:relative;background:#ffffff;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;margin-bottom:20px;width:${w}px;height:${h}px;`;
         if (this._observers[i])
           this._observers[i].disconnect();
-        const obs = new IntersectionObserver((entries) => {
-          if (entries[0].isIntersecting) {
-            obs.disconnect();
-            delete this._observers[i];
-            this.renderPageInWrap(i, wrap);
-          }
-        }, { root: this.scrollEl, rootMargin: "800px 0px" });
-        obs.observe(wrap);
-        this._observers[i] = obs;
       }
+      this._setupVisibilityObserver();
       if (this.pageInfo)
         this.pageInfo.textContent = `${this.visiblePage || 1}/${this.pageCount}`;
       if (this.statusEl)
@@ -21122,9 +21243,67 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       this._rebuilding = false;
     }
   }
+  _setupVisibilityObserver() {
+    if (this._visObs)
+      this._visObs.disconnect();
+    this._visObs = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const pn = parseInt(entry.target.dataset.page);
+        if (entry.isIntersecting && !this._renderedPages.has(pn)) {
+          this.renderPageInWrap(pn, entry.target);
+        }
+      }
+      this._scheduleUnload();
+    }, { root: this.scrollEl, rootMargin: "300px 0px" });
+    this.scrollEl.querySelectorAll("[data-page]").forEach((el) => this._visObs.observe(el));
+  }
+  _scheduleUnload() {
+    if (this._unloadTimer)
+      return;
+    this._unloadTimer = setTimeout(() => {
+      this._unloadTimer = null;
+      const vis = this.visiblePage || 1;
+      const KEEP = 3;
+      for (const numStr of Object.keys(this.pageCanvases)) {
+        const num = parseInt(numStr);
+        if (Math.abs(num - vis) > KEEP) {
+          this._unloadPage(num);
+        }
+      }
+    }, 2e3);
+  }
+  _unloadPage(num) {
+    var _a;
+    const d = this.pageCanvases[num];
+    if (!d)
+      return;
+    if (d.pdfCanvas) {
+      d.pdfCanvas.width = 0;
+      d.pdfCanvas.height = 0;
+    }
+    if (d.inkCanvas) {
+      d.inkCanvas.width = 0;
+      d.inkCanvas.height = 0;
+    }
+    delete this.pageCanvases[num];
+    (_a = this._renderedPages) == null ? void 0 : _a.delete(num);
+    const wrap = d.wrap || this.scrollEl.querySelector(`[data-page="${num}"]`);
+    if (wrap) {
+      const w = wrap.style.width;
+      const h = wrap.style.height;
+      wrap.empty();
+      wrap.style.width = w;
+      wrap.style.height = h;
+    }
+  }
   async renderPageInWrap(num, wrap) {
+    var _a;
     if (!this.pdfDoc)
       return;
+    if ((_a = this._renderedPages) == null ? void 0 : _a.has(num))
+      return;
+    this._renderedPages = this._renderedPages || /* @__PURE__ */ new Set();
+    this._renderedPages.add(num);
     try {
       const page = await this.pdfDoc.getPage(num);
       const vp = page.getViewport({ scale: this.scale });
@@ -21137,6 +21316,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       pc.height = vp.height;
       pc.style.cssText = "position:absolute;inset:0;";
       await page.render({ canvasContext: pc.getContext("2d"), viewport: vp }).promise;
+      page.cleanup();
       const ic = wrap.createEl("canvas");
       const dpr = window.devicePixelRatio || 1;
       ic.width = vp.width * dpr;
@@ -21156,6 +21336,25 @@ var PdfNotesView = class extends import_obsidian.ItemView {
   }
   // Logic for rebuilding handled by primary rebuildAll function above
   setupGlobalEvents() {
+    if (this._onKeyDown)
+      window.removeEventListener("keydown", this._onKeyDown);
+    this._onKeyDown = (ev) => {
+      if (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA" || ev.target.tagName === "SELECT")
+        return;
+      if (ev.ctrlKey && ev.key === "z" && !ev.shiftKey) {
+        ev.preventDefault();
+        this.undo();
+      } else if (ev.ctrlKey && ev.key === "y" || ev.ctrlKey && ev.shiftKey && ev.key === "Z") {
+        ev.preventDefault();
+        this.redo();
+      } else if (ev.key === "Delete" || ev.key === "Backspace") {
+        if (this.selectedElements.length > 0) {
+          ev.preventDefault();
+          this.deleteSelected();
+        }
+      }
+    };
+    window.addEventListener("keydown", this._onKeyDown);
     if (this._onPaste)
       window.removeEventListener("paste", this._onPaste);
     this._onPaste = (ev) => {
@@ -21168,6 +21367,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     };
     window.addEventListener("paste", this._onPaste);
     const el = this.scrollEl;
+    el.addEventListener("touchmove", this._touchMoveGuard, { passive: false });
     const getPageAt = (e) => {
       const target = document.elementFromPoint(e.clientX, e.clientY);
       const wrap = target == null ? void 0 : target.closest("[data-page]");
@@ -21251,29 +21451,44 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         return;
       }
       if (useTool === "image") {
-        const inp = document.createElement("input");
-        inp.type = "file";
-        inp.accept = "image/*";
-        inp.onchange = (ev) => {
-          const f = ev.target.files[0];
-          if (!f)
-            return;
-          const rd = new FileReader();
-          rd.onload = () => {
-            const img = new Image();
-            img.onload = () => {
-              const aspect = img.width / img.height;
-              const w = Math.min(200, img.width / this.scale);
-              const s = { type: "image", data: rd.result, x: p.x, y: p.y, w, h: w / aspect, pn: page.pn, opacity: this.opacity };
-              (this.strokes[page.pn] = this.strokes[page.pn] || []).push(s);
-              this.redraw(page.pn);
-              this.scheduleSave();
-            };
-            img.src = rd.result;
+        const insertImage = (dataUrl) => {
+          const img = new Image();
+          img.onload = () => {
+            const aspect = img.width / img.height;
+            const w = Math.min(200, img.width / this.scale);
+            const s = { type: "image", data: dataUrl, x: p.x, y: p.y, w, h: w / aspect, pn: page.pn, opacity: this.opacity };
+            (this.strokes[page.pn] = this.strokes[page.pn] || []).push(s);
+            this.pushUndo(page.pn, s);
+            this.redraw(page.pn);
+            this.scheduleSave();
           };
-          rd.readAsDataURL(f);
+          img.src = dataUrl;
         };
-        inp.click();
+        const src = this.plugin.settings.imageSource || "filesystem";
+        if (src === "vault") {
+          new VaultImagePicker(this.app, this.plugin.settings.imageVaultFolder || "", async (file) => {
+            const buf = await this.app.vault.readBinary(file);
+            const ext = file.extension.toLowerCase();
+            const mime = ext === "png" ? "image/png" : ext === "svg" ? "image/svg+xml" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+            const blob = new Blob([buf], { type: mime });
+            const rd = new FileReader();
+            rd.onload = () => insertImage(rd.result);
+            rd.readAsDataURL(blob);
+          }).open();
+        } else {
+          const inp = document.createElement("input");
+          inp.type = "file";
+          inp.accept = "image/*";
+          inp.onchange = (ev) => {
+            const f = ev.target.files[0];
+            if (!f)
+              return;
+            const rd = new FileReader();
+            rd.onload = () => insertImage(rd.result);
+            rd.readAsDataURL(f);
+          };
+          inp.click();
+        }
         this.activeStrokeTool = null;
         return;
       }
@@ -21283,6 +21498,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       if (canvas && canvas.setPointerCapture)
         canvas.setPointerCapture(e.pointerId);
       if (useTool === "select") {
+        const now = Date.now();
+        const isDblClick = this._lastSelectClick && now - this._lastSelectClick.time < 400 && Math.hypot(p.x - this._lastSelectClick.x, p.y - this._lastSelectClick.y) < 10;
+        this._lastSelectClick = { time: now, x: p.x, y: p.y, pn: page.pn };
+        if (isDblClick) {
+          const hit2 = this.hitTest(page.pn, p);
+          if (hit2 && hit2.type === "text") {
+            this._lastSelectClick = null;
+            this.startEditingText(hit2, page.pn, e);
+            this.drawing = false;
+            return;
+          }
+        }
         for (let sel of this.selectedElements) {
           if (sel.pn === page.pn && (sel.s.type === "image" || sel.s.type === "rect")) {
             const hX = sel.s.x + sel.s.w, hY = sel.s.y + sel.s.h;
@@ -21296,10 +21523,6 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         }
         const hit = this.hitTest(page.pn, p);
         if (hit) {
-          if (hit.type === "text") {
-            this.startEditingText(hit, page.pn, e);
-            return;
-          }
           if (!this.selectedElements.some((sel) => sel.s === hit))
             this.selectedElements = [{ pn: page.pn, s: hit }];
           this.isMoving = true;
@@ -21309,7 +21532,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             if (sel.pn !== page.pn)
               return false;
             const s = sel.s;
-            if (s.type === "text" || s.type === "image" || s.type === "rect")
+            if (s.type === "text") {
+              const sz = s.size || 16;
+              const lines = s.text.split("\n");
+              const tw = Math.max(...lines.map((l) => l.length)) * sz * 0.6;
+              const th = lines.length * sz * 1.2;
+              return p.x >= s.x && p.x <= s.x + tw && p.y >= s.y && p.y <= s.y + th;
+            }
+            if (s.type === "image" || s.type === "rect")
               return p.x >= s.x && p.x <= s.x + (s.w || 100) && p.y >= s.y && p.y <= s.y + (s.h || 20);
             if (s.type === "circle")
               return Math.hypot(p.x - s.cx, p.y - s.cy) < Math.max(s.rx, s.ry);
@@ -21478,15 +21708,21 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           this.requestRedrawAll();
         } else if (useTool === "snip" && this.snipRect) {
           this.finishSnip();
-        } else if (this.curStroke && this.curStroke.points.length > 1)
+        } else if (this.curStroke && this.curStroke.points.length > 1) {
           (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curStroke);
-        else if (this.curPreview)
+          this.pushUndo(this.activePn, this.curStroke);
+        } else if (this.curPreview) {
           (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curPreview);
+          this.pushUndo(this.activePn, this.curPreview);
+        }
         this.curStroke = null;
         this.curPreview = null;
         this.shapeStart = null;
         this.activeStrokeTool = null;
         this.redraw(this.activePn);
+        if (this._eraseDirty) {
+          this._eraseDirty = false;
+        }
         this.scheduleSave();
       }
       if (this.isHandScrolling) {
@@ -21525,7 +21761,9 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       return;
     this._drawReq = requestAnimationFrame(() => {
       this.updateToolbar();
-      this.rebuildAll();
+      for (const pn of Object.keys(this.pageCanvases)) {
+        this.redraw(parseInt(pn));
+      }
       this._drawReq = null;
     });
   }
@@ -21579,7 +21817,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const isSelected = this.selectedElements.some((sel) => sel.s === s);
     if (isSelected) {
       ctx.save();
-      ctx.strokeStyle = "#89b4fa";
+      ctx.strokeStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || "dark")).selStroke;
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 2]);
       if (s.type === "text") {
@@ -21590,7 +21828,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       } else if (s.type === "image" || s.type === "rect") {
         ctx.strokeRect(s.x - 2, s.y - 2, s.w + 4, s.h + 4);
         ctx.setLineDash([]);
-        ctx.fillStyle = "#89b4fa";
+        ctx.fillStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || "dark")).selStroke;
         ctx.fillRect(s.x + s.w - 4, s.y + s.h - 4, 8, 8);
       } else if (s.type === "circle") {
         ctx.beginPath();
@@ -21715,7 +21953,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (useTool === "lasso" && this.lassoRect) {
       ctx.beginPath();
       ctx.setLineDash([5, 5]);
-      ctx.strokeStyle = "#89b4fa";
+      ctx.strokeStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || "dark")).selStroke;
       ctx.lineWidth = 1;
       ctx.strokeRect(this.lassoRect.x, this.lassoRect.y, this.lassoRect.w, this.lassoRect.h);
       ctx.fillStyle = "rgba(137, 180, 250, 0.1)";
@@ -21861,6 +22099,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           pn
         };
         (this.strokes[pn] = this.strokes[pn] || []).push(news);
+        this.pushUndo(pn, news);
       }
     } else if (mode === "edit" && s) {
       if (txt.trim() === "") {
@@ -21938,6 +22177,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       opacity: this.opacity
     };
     (this.strokes[pn] = this.strokes[pn] || []).push(news);
+    this.pushUndo(pn, news);
     try {
       tmp.toBlob(async (blob) => {
         if (!blob)
@@ -21945,10 +22185,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         try {
           const item = new ClipboardItem({ "image/png": blob });
           await navigator.clipboard.write([item]);
-          new import_obsidian.Notice("Screenshot in Zwischenablage & Seite eingef\xFCgt! \u2702\uFE0F");
+          new import_obsidian.Notice("Screenshot copied to clipboard & added to page!");
         } catch (err) {
           console.error("[PDF.notes] Clipboard error", err);
-          new import_obsidian.Notice("Eingef\xFCgt, aber Kopieren in Zwischenablage fehlgeschlagen.");
+          new import_obsidian.Notice("Added to page, but clipboard copy failed.");
         }
       }, "image/png");
     } catch (e) {
@@ -21972,10 +22212,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           }
         }
       }
-      new import_obsidian.Notice("Kein Bild in der Zwischenablage gefunden.");
+      new import_obsidian.Notice("No image found in clipboard.");
     } catch (e) {
       console.error("[PDF.notes] Paste failed", e);
-      new import_obsidian.Notice("Einf\xFCgen fehlgeschlagen. Obsidian ben\xF6tigt ggf. Clipboard-Rechte.");
+      new import_obsidian.Notice("Paste failed. Obsidian may need clipboard permissions.");
     }
   }
   addPastedImage(fileOrBlob) {
@@ -22009,9 +22249,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           opacity: this.opacity
         };
         (this.strokes[pn] = this.strokes[pn] || []).push(s);
+        this.pushUndo(pn, s);
         this.redraw(pn);
         this.scheduleSave();
-        new import_obsidian.Notice("Bild im Sichtfeld eingef\xFCgt \u{1F4CB}");
+        new import_obsidian.Notice("Image pasted into view!");
       };
       img.src = rd.result;
     };
@@ -22055,8 +22296,11 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       return;
     this.selectedElements.forEach((sel) => {
       const list = this.strokes[sel.pn];
-      if (list)
+      if (list) {
         this.strokes[sel.pn] = list.filter((item) => item !== sel.s);
+        this.undoStack = this.undoStack.filter((u) => u.item !== sel.s);
+        this.redoStack.push({ pn: sel.pn, item: sel.s });
+      }
     });
     const pns = new Set(this.selectedElements.map((sel) => sel.pn));
     this.selectedElements = [];
@@ -22125,8 +22369,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       return !this.shapeHitTest(s, pos, r);
     });
     if (this.strokes[pn].length !== before) {
-      this.redraw(pn);
-      this.scheduleSave();
+      this._eraseDirty = true;
+      this.requestRedraw(pn);
     }
   }
   // Pixel eraser: cuts strokes, BUT shapes are deleted as a whole just like the stroke eraser
@@ -22162,8 +22406,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     }
     if (changed) {
       this.strokes[pn] = result;
-      this.redraw(pn);
-      this.scheduleSave();
+      this._eraseDirty = true;
+      this.requestRedraw(pn);
     }
   }
   erase(pn, pos) {
@@ -22173,23 +22417,53 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     else
       this.eraseStroke(pn, pos);
   }
+  pushUndo(pn, item) {
+    this.undoStack.push({ pn, item });
+    this.redoStack = [];
+  }
   undo() {
     var _a;
+    if (this.undoStack.length > 0) {
+      const { pn, item } = this.undoStack.pop();
+      const list = this.strokes[pn];
+      if (list) {
+        const idx = list.indexOf(item);
+        if (idx !== -1) {
+          list.splice(idx, 1);
+          this.redoStack.push({ pn, item });
+          this.redraw(pn);
+          this.scheduleSave();
+          return;
+        }
+      }
+      this.undo();
+      return;
+    }
     for (let p = this.pageCount; p >= 1; p--) {
       if (((_a = this.strokes[p]) == null ? void 0 : _a.length) > 0) {
-        this.strokes[p].pop();
+        const item = this.strokes[p].pop();
+        this.redoStack.push({ pn: p, item });
         this.redraw(p);
         this.scheduleSave();
         break;
       }
     }
   }
+  redo() {
+    if (this.redoStack.length === 0)
+      return;
+    const { pn, item } = this.redoStack.pop();
+    (this.strokes[pn] = this.strokes[pn] || []).push(item);
+    this.undoStack.push({ pn, item });
+    this.redraw(pn);
+    this.scheduleSave();
+  }
   // ── Saving ─────────────────────────────────
   scheduleSave() {
     if (this.saveTimer)
       clearTimeout(this.saveTimer);
-    this.statusEl.setText("\u23F3 Saving...");
-    this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 4e3);
+    this._savePending = true;
+    this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 8e3);
   }
   // Saving as editable PDF Ink annotation (cross-device editable)
   async saveAsAnnotations() {
@@ -22198,17 +22472,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    if (!Object.values(this.strokes).some((a) => (a == null ? void 0 : a.length) > 0)) {
-      this.statusEl.setText("No drawings.");
+    this._savePending = false;
+    if (!Object.values(this.strokes).some((a) => (a == null ? void 0 : a.length) > 0))
+      return;
+    if (this._saving) {
+      this.scheduleSave();
       return;
     }
-    this.statusEl.setText("\u{1F4DD} Saving annotation...");
-    if (this.btnSaveAnnot)
-      this.btnSaveAnnot.disabled = true;
+    this._saving = true;
     try {
       const pdfLib = es_exports;
       const { PDFDocument: PDFDocument2, PDFName: PDFName2, PDFArray: PDFArray2, PDFDict: PDFDict2, PDFString: PDFString2 } = pdfLib;
-      const buf = await this.app.vault.adapter.readBinary(this.pdfFile.path);
+      const buf = this._cleanPdfBuf || await this.app.vault.adapter.readBinary(this.pdfFile.path);
       const doc = await PDFDocument2.load(buf, { ignoreEncryption: true });
       const pages = doc.getPages();
       for (const [pgStr, strokes] of Object.entries(this.strokes)) {
@@ -22299,16 +22574,13 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           annotArr.push(doc.context.register(doc.context.obj(annotObj)));
         }
       }
-      await this.app.vault.adapter.writeBinary(this.pdfFile.path, await doc.save());
-      this.statusEl.setText("\u2705 Annotation saved!");
-      new import_obsidian.Notice("PDF.notes: Annotation saved \u{1F4DD}");
+      const savedBytes = await doc.save();
+      await new Promise((r) => setTimeout(r, 0));
+      await this.app.vault.adapter.writeBinary(this.pdfFile.path, savedBytes);
     } catch (err) {
-      this.statusEl.setText("\u274C " + err.message);
       console.error("[PDF.notes] Annotation error:", err);
-      new import_obsidian.Notice("Error: " + err.message, 6e3);
     } finally {
-      if (this.btnSaveAnnot)
-        this.btnSaveAnnot.disabled = false;
+      this._saving = false;
     }
   }
   // Flatten drawings permanently (cannot be undone)
@@ -22588,6 +22860,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       } catch (innerErr) {
         console.warn("[PDF.notes] Error preprocessing annotations:", innerErr.message);
       }
+      this._cleanPdfBuf = u8ForPdfJs.buffer.slice(u8ForPdfJs.byteOffset, u8ForPdfJs.byteOffset + u8ForPdfJs.byteLength);
       const lib = await this.getPdfJs();
       if (!lib)
         throw new Error("pdf.js not found");
@@ -22766,8 +23039,36 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     return null;
   }
   async onClose() {
+    var _a;
+    if (this._onKeyDown)
+      window.removeEventListener("keydown", this._onKeyDown);
     if (this._onPaste)
       window.removeEventListener("paste", this._onPaste);
+    if (this.scrollEl && this._touchMoveGuard)
+      this.scrollEl.removeEventListener("touchmove", this._touchMoveGuard);
+    if (this._scrollRaf) {
+      cancelAnimationFrame(this._scrollRaf);
+      this._scrollRaf = null;
+    }
+    if (this._unloadTimer) {
+      clearTimeout(this._unloadTimer);
+      this._unloadTimer = null;
+    }
+    if (this._visObs)
+      this._visObs.disconnect();
+    for (const num of Object.keys(this.pageCanvases)) {
+      const d = this.pageCanvases[num];
+      if (d.pdfCanvas) {
+        d.pdfCanvas.width = 0;
+        d.pdfCanvas.height = 0;
+      }
+      if (d.inkCanvas) {
+        d.inkCanvas.width = 0;
+        d.inkCanvas.height = 0;
+      }
+    }
+    this.pageCanvases = {};
+    (_a = this._imgCache) == null ? void 0 : _a.clear();
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -22830,13 +23131,7 @@ var PdfNotesSettingTab = class extends import_obsidian.PluginSettingTab {
     info.createEl("br");
     info.createSpan({ text: "Overwritten with each insert/delete action (always state before the change)." });
     el.createEl("h3", { text: "\u2B1B Eraser" });
-    new import_obsidian.Setting(el).setName("Eraser mode").setDesc("Stroke eraser removes the entire stroke on touch. Pixel eraser deletes only the touched area.").addDropdown((dd) => {
-      dd.addOption("stroke", "\u{1F5C2} Stroke Eraser (entire stroke)").addOption("pixel", "\u2702\uFE0F Pixel Eraser (touched area only)").setValue(this.plugin.settings.eraserMode).onChange(async (v) => {
-        this.plugin.settings.eraserMode = v;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian.Setting(el).setName("Eraser size").setDesc("Radius of the eraser in pixels (10 = small \xB7 20 = medium \xB7 40 = large).").addSlider((sl) => {
+    new import_obsidian.Setting(el).setName("Eraser size").setDesc("Radius of the eraser in pixels (10 = small \xB7 20 = medium \xB7 40 = large). Eraser mode (Strich/Punkt) is accessible via double-click on the eraser tool.").addSlider((sl) => {
       sl.setLimits(5, 80, 5).setValue(this.plugin.settings.eraserSize).setDynamicTooltip().onChange(async (v) => {
         this.plugin.settings.eraserSize = v;
         await this.plugin.saveSettings();
@@ -22859,6 +23154,24 @@ var PdfNotesSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    el.createEl("h3", { text: "\u{1F5BC}\uFE0F Image Tool" });
+    let vaultFolderRow;
+    new import_obsidian.Setting(el).setName("Image source").setDesc("Where should images be loaded from when using the image tool?").addDropdown((dd) => {
+      dd.addOption("filesystem", "\u{1F4C1} File system (file picker)").addOption("vault", "\u{1F5C2}\uFE0F Obsidian Vault (fuzzy search)").setValue(this.plugin.settings.imageSource || "filesystem").onChange(async (v) => {
+        this.plugin.settings.imageSource = v;
+        await this.plugin.saveSettings();
+        if (vaultFolderRow)
+          vaultFolderRow.settingEl.style.display = v === "vault" ? "" : "none";
+      });
+    });
+    vaultFolderRow = new import_obsidian.Setting(el).setName("Vault image folder").setDesc("Only search for images in this folder (empty = entire Vault).").addText((t) => {
+      t.setPlaceholder("e.g. Attachments/Images").setValue(this.plugin.settings.imageVaultFolder || "").onChange(async (v) => {
+        this.plugin.settings.imageVaultFolder = v.trim();
+        await this.plugin.saveSettings();
+      });
+      t.inputEl.style.width = "300px";
+    });
+    vaultFolderRow.settingEl.style.display = (this.plugin.settings.imageSource || "filesystem") === "vault" ? "" : "none";
     el.createEl("h3", { text: "\u{1F6E0}\uFE0F Toolbar Customization" });
     const toolMap = {
       "nav": "\u25C0\u25B6 Navigation (prev / next page)",
@@ -22878,10 +23191,10 @@ var PdfNotesSettingTab = class extends import_obsidian.PluginSettingTab {
       "line": "\u2571 Line",
       "arrow": "\u2192 Arrow",
       "undo": "\u21A9 Undo",
+      "redo": "\u21AA Redo",
       "zen": "\u26F6 Zen Mode",
       "insert": "\u{1F4C4} Insert Page",
       "remove": "\u{1F5D1} Delete Page",
-      "save": "\u{1F4BE} Save Annotations",
       "flatten": "\u{1F525} Flatten PDF"
     };
     Object.entries(toolMap).forEach(([id, name]) => {
@@ -22906,6 +23219,20 @@ var PdfNotesSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(el).setName("Toolbar position").setDesc("Choose where to place the toolbars.").addDropdown((dd) => {
       dd.addOption("top", "Top").addOption("right", "Right Side").setValue(this.plugin.settings.toolbarPosition || "top").onChange(async (v) => {
         this.plugin.settings.toolbarPosition = v;
+        await this.plugin.saveSettings();
+        this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+          if (leaf.view instanceof PdfNotesView) {
+            leaf.view.buildUI();
+            if (leaf.view.pdfDoc)
+              leaf.view.rebuildAll();
+          }
+        });
+      });
+    });
+    el.createEl("h3", { text: "\u{1F317} Theme" });
+    new import_obsidian.Setting(el).setName("Background theme").setDesc("Choose whether the PDF editor uses a light or dark background.").addDropdown((dd) => {
+      dd.addOption("dark", "\u{1F319} Dark Mode").addOption("light", "\u2600\uFE0F Light Mode").setValue(this.plugin.settings.themeMode || "dark").onChange(async (v) => {
+        this.plugin.settings.themeMode = v;
         await this.plugin.saveSettings();
         this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
           if (leaf.view instanceof PdfNotesView) {
@@ -23064,7 +23391,7 @@ var PdfNotesPlugin = class extends import_obsidian.Plugin {
     console.log("[PDF.notes] v1.0.0");
     this.pluginDir = nodePath.join(this.app.vault.adapter.getBasePath(), ".obsidian", "plugins", "pdf-notes");
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    ["snip", "lasso", "select", "nav", "zoom", "undo", "zen", "insert", "remove", "save", "flatten"].forEach((t) => {
+    ["snip", "lasso", "select", "nav", "zoom", "undo", "redo", "zen", "insert", "remove", "flatten"].forEach((t) => {
       if (!this.settings.enabledTools.includes(t))
         this.settings.enabledTools.push(t);
     });

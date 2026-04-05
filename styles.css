@@ -3,16 +3,13 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: #1e1e2e;
 }
 
 .pdf-notes-toolbar {
     display: flex;
     align-items: center;
-    background: #181825;
-    border-bottom: 1px solid #313244;
-    padding: 2px 6px;
-    gap: 4px;
+    padding: 2px 4px;
+    gap: 1px;
     overflow-x: auto;
     scrollbar-width: none;
     -ms-overflow-style: none;
@@ -23,24 +20,22 @@
 }
 
 .pdf-notes-toolbar .pdf-tool-btn {
-    background: #313244;
-    border: 1px solid #45475a;
-    border-radius: 4px;
-    color: #cdd6f4;
+    border: none;
+    border-radius: 6px;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 2px 6px;
-    transition: all 0.2s ease;
-    min-width: 30px;
+    padding: 4px 7px;
+    transition: background 0.15s ease, color 0.15s ease;
+    min-width: 28px;
     height: 28px;
+    opacity: 0.85;
 }
 
 .pdf-notes-toolbar .pdf-tool-btn:hover {
-    background: #45475a;
-    color: #fff;
-    transform: translateY(-1px);
+    opacity: 1;
+    filter: brightness(1.15);
 }
 
 /* Zen Mode (Fullscreen) */
@@ -51,7 +46,6 @@
     width: 100vw !important;
     height: 100vh !important;
     z-index: 9999;
-    background: #1e1e2e;
 }
 
 .pdf-notes-zen-mode .view-header {
