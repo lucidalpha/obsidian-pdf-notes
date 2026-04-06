@@ -648,6 +648,9 @@ class PdfNotesView extends ItemView {
         const root = this.contentEl.closest('.pdf-notes-container') || this.contentEl;
         const isZen = root.classList.toggle('pdf-notes-zen-mode');
 
+        const st = this.scrollEl ? this.scrollEl.scrollTop : 0;
+        const sl = this.scrollEl ? this.scrollEl.scrollLeft : 0;
+
         // Move container to body for true fixed positioning (escapes sidebar overflow/stacking context)
         if (isZen) {
             this._zenOrigParent = root.parentElement;
@@ -657,6 +660,13 @@ class PdfNotesView extends ItemView {
             if (this._zenOrigNext) this._zenOrigParent.insertBefore(root, this._zenOrigNext);
             else this._zenOrigParent.appendChild(root);
             this._zenOrigParent = null; this._zenOrigNext = null;
+        }
+
+        if (this.scrollEl) {
+            requestAnimationFrame(() => {
+                this.scrollEl.scrollTop = st;
+                this.scrollEl.scrollLeft = sl;
+            });
         }
 
         this.app.workspace.iterateAllLeaves(leaf => {
@@ -817,6 +827,7 @@ class PdfNotesView extends ItemView {
                 const d = this.pageCanvases[num];
                 if (d.pdfCanvas) { d.pdfCanvas.width = 0; d.pdfCanvas.height = 0; }
                 if (d.inkCanvas) { d.inkCanvas.width = 0; d.inkCanvas.height = 0; }
+                if (d.liveCanvas) { d.liveCanvas.width = 0; d.liveCanvas.height = 0; }
             }
             this.pageCanvases = {};
             this._renderedPages = new Set();
@@ -844,7 +855,7 @@ class PdfNotesView extends ItemView {
                     wrap.dataset.page = String(i);
                 }
                 wrap.empty();
-                wrap.style.cssText = `position:relative;background:#ffffff;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;margin-bottom:20px;width:${w}px;height:${h}px;`;
+                wrap.style.cssText = `position:relative;background:#ffffff;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;margin-bottom:20px;width:${Math.round(w)}px;height:${Math.round(h)}px;`;
 
                 if (this._observers[i]) this._observers[i].disconnect();
             }
@@ -881,7 +892,7 @@ class PdfNotesView extends ItemView {
         this._unloadTimer = setTimeout(() => {
             this._unloadTimer = null;
             const vis = this.visiblePage || 1;
-            const KEEP = 3;
+            const KEEP = 1;
             for (const numStr of Object.keys(this.pageCanvases)) {
                 const num = parseInt(numStr);
                 if (Math.abs(num - vis) > KEEP) {
@@ -896,6 +907,7 @@ class PdfNotesView extends ItemView {
         if (!d) return;
         if (d.pdfCanvas) { d.pdfCanvas.width = 0; d.pdfCanvas.height = 0; }
         if (d.inkCanvas) { d.inkCanvas.width = 0; d.inkCanvas.height = 0; }
+        if (d.liveCanvas) { d.liveCanvas.width = 0; d.liveCanvas.height = 0; }
         delete this.pageCanvases[num];
         this._renderedPages?.delete(num);
         const wrap = d.wrap || this.scrollEl.querySelector(`[data-page="${num}"]`);
@@ -915,7 +927,7 @@ class PdfNotesView extends ItemView {
             const page = await this.pdfDoc.getPage(num);
             const vp = page.getViewport({ scale: this.scale });
             this.pageSizes[num] = { width: vp.width, height: vp.height };
-            wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+            wrap.style.width = Math.round(vp.width) + 'px'; wrap.style.height = Math.round(vp.height) + 'px';
             wrap.empty();
 
             const pc = wrap.createEl('canvas'); pc.width = vp.width; pc.height = vp.height;
@@ -924,15 +936,23 @@ class PdfNotesView extends ItemView {
             page.cleanup();
 
             const ic = wrap.createEl('canvas');
-            const dpr = window.devicePixelRatio || 1;
+            let dpr = window.devicePixelRatio || 1;
+            if (vp.width * dpr > 3000) dpr = 3000 / vp.width; // Cap max resolution
             ic.width = vp.width * dpr; ic.height = vp.height * dpr;
             ic.style.width = `${vp.width}px`; ic.style.height = `${vp.height}px`;
             ic.style.position = 'absolute'; ic.style.inset = '0'; ic.style.zIndex = '5';
-
             const ctx = ic.getContext('2d');
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, vp, wrap };
+            const lc = wrap.createEl('canvas');
+            lc.width = ic.width; lc.height = ic.height;
+            lc.style.width = ic.style.width; lc.style.height = ic.style.height;
+            lc.style.position = 'absolute'; lc.style.inset = '0'; lc.style.zIndex = '6'; // On top of inkCanvas
+            lc.style.pointerEvents = 'none'; // Passive observer
+            const lctx = lc.getContext('2d');
+            lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, vp, wrap };
             this.redraw(num);
         } catch (e) { console.error('[PDF.notes] Render error', num, e); }
     }
@@ -1014,8 +1034,10 @@ class PdfNotesView extends ItemView {
                 if (this.floatingInput) this.finishFloatingInput();
                 const inp = document.body.createEl('textarea');
                 const fontSize = (this.plugin.settings.textSize || 16) * this.scale;
+                const sy = e.clientY - (fontSize/4);
+                p.y = (sy - r.top) / this.scale; // Align physical storage to visual offset
                 
-                inp.style.cssText = `position:absolute;left:${e.clientX}px;top:${e.clientY - (fontSize/4)}px;z-index:9999;background:transparent;color:${this.color};border:none;padding:0;margin:0;font:${fontSize}px ${this.plugin.settings.textFont||'Inter'};outline:none;min-width:10px;line-height:1.2;overflow:hidden;resize:none;caret-color:${this.color};`;
+                inp.style.cssText = `position:absolute;left:${e.clientX}px;top:${sy}px;z-index:9999;background:transparent;color:${this.color};border:none;padding:0;margin:0;font-size:${fontSize}px;font-family:"${this.plugin.settings.textFont||'Inter'}";line-height:1.2;outline:none;min-width:10px;overflow:hidden;resize:none;caret-color:${this.color};white-space:pre-wrap;`;
                 
                 const resize = () => {
                     inp.style.height = 'auto';
@@ -1226,20 +1248,49 @@ class PdfNotesView extends ItemView {
                 this.snipRect = { x: Math.min(this.snipStart.x, p.x), y: Math.min(this.snipStart.y, p.y), w: Math.abs(p.x - this.snipStart.x), h: Math.abs(p.y - this.snipStart.y) };
                 this.requestRedraw(this.activePn);
             } else if (useTool === 'pen' && this.curStroke) {
-                const last = this.curStroke.points[this.curStroke.points.length - 1];
-                if (Math.hypot(p.x - last.x, p.y - last.y) > 0.1) {
-                    this.curStroke.points.push(p);
-                    if (this.opacity < 1.0) {
-                        this.requestRedraw(this.activePn);
-                    } else {
-                        this.drawIncremental(this.activePn, this.curStroke);
+                const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+                let added = false;
+                for (const ce of coalesced) {
+                    const cp = { x: (ce.clientX - r.left) / this.scale, y: (ce.clientY - r.top) / this.scale };
+                    const last = this.curStroke.points[this.curStroke.points.length - 1];
+                    if (Math.hypot(cp.x - last.x, cp.y - last.y) > 0.1 / this.scale) {
+                        this.curStroke.points.push(cp);
+                        added = true;
+                    }
+                }
+                
+                if (added) {
+                    const d = this.pageCanvases[this.activePn];
+                    if (d && d.liveCanvas) {
+                        const lctx = d.liveCanvas.getContext('2d');
+                        lctx.save();
+                        lctx.setTransform(1, 0, 0, 1, 0, 0);
+                        lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+                        lctx.restore();
+                        
+                        lctx.save();
+                        lctx.scale(this.scale, this.scale);
+                        this.drawShape(lctx, this.curStroke);
+                        lctx.restore();
                     }
                 }
             } else if (useTool === 'eraser') {
                 this.erase(this.activePn, p);
             } else if (['rect', 'circle', 'line', 'arrow'].includes(useTool) && this.shapeStart) {
                 this.curPreview = this.buildShape(this.shapeStart, p);
-                this.requestRedraw(this.activePn);
+                const d = this.pageCanvases[this.activePn];
+                if (d && d.liveCanvas) {
+                    const lctx = d.liveCanvas.getContext('2d');
+                    lctx.save();
+                    lctx.setTransform(1, 0, 0, 1, 0, 0);
+                    lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+                    lctx.restore();
+                    
+                    lctx.save();
+                    lctx.scale(this.scale, this.scale);
+                    this.drawShape(lctx, this.curPreview);
+                    lctx.restore();
+                }
             }
         };
 
@@ -1277,9 +1328,25 @@ class PdfNotesView extends ItemView {
                 if (useTool === 'select') { this.isMoving = false; this.isResizing = false; this.activeHandle = null; this.moveStart = null; }
                 else if (useTool === 'lasso' && this.lassoRect) { this.completeLasso(); this.lassoRect = null; this.lassoStart = null; this.requestRedrawAll(); }
                 else if (useTool === 'snip' && this.snipRect) { this.finishSnip(); }
-                else if (this.curStroke && this.curStroke.points.length > 1) { (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curStroke); this.pushUndo(this.activePn, this.curStroke); }
-                else if (this.curPreview) { (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curPreview); this.pushUndo(this.activePn, this.curPreview); }
+                else if (this.curStroke && this.curStroke.points.length > 1) { 
+                    (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curStroke); 
+                    this.pushUndo(this.activePn, this.curStroke); 
+                }
+                else if (this.curPreview) { 
+                    (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curPreview); 
+                    this.pushUndo(this.activePn, this.curPreview); 
+                }
                 
+                // Finalize to inkCanvas and clear liveCanvas
+                const d = this.pageCanvases[this.activePn];
+                if (d && d.liveCanvas) {
+                    const lctx = d.liveCanvas.getContext('2d');
+                    lctx.save();
+                    lctx.setTransform(1, 0, 0, 1, 0, 0);
+                    lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+                    lctx.restore();
+                }
+
                 this.curStroke = null; this.curPreview = null; this.shapeStart = null;
                 this.activeStrokeTool = null;
                 this.redraw(this.activePn);
@@ -1320,21 +1387,7 @@ class PdfNotesView extends ItemView {
         });
     }
 
-    drawIncremental(pn, s) {
-        const d = this.pageCanvases[pn]; if (!d || s.points.length < 3) return;
-        const ctx = d.inkCanvas.getContext('2d'), pts = s.points;
-        const i = pts.length - 1;
-        const midPrev = { x: (pts[i-2].x + pts[i-1].x) / 2, y: (pts[i-2].y + pts[i-1].y) / 2 };
-        const midNow = { x: (pts[i-1].x + pts[i].x) / 2, y: (pts[i-1].y + pts[i].y) / 2 };
-        
-        ctx.save(); ctx.scale(this.scale, this.scale);
-        ctx.beginPath(); ctx.globalAlpha = s.opacity ?? 1.0; 
-        ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.moveTo(midPrev.x, midPrev.y);
-        ctx.quadraticCurveTo(pts[i-1].x, pts[i-1].y, midNow.x, midNow.y);
-        ctx.stroke();
-        ctx.restore();
-    }
+    // Removed drawIncremental in favor of liveCanvas + full stroke redraw for performance and smoothness.
     drawSeg(canvas, s) {
         const pts = s.points; if (pts.length < 2) return;
         const ctx = canvas.getContext('2d'), a = pts[pts.length - 2], b = pts[pts.length - 1];
@@ -1383,7 +1436,7 @@ class PdfNotesView extends ItemView {
         if (s.type === 'text') {
             ctx.fillStyle = s.color;
             const sz = s.size || 16;
-            ctx.font = `${sz}px ${this.plugin.settings.textFont || 'Inter'}`;
+            ctx.font = `${sz}px "${this.plugin.settings.textFont || 'Inter'}"`;
             ctx.textBaseline = 'top';
             const lines = s.text.split('\n');
             lines.forEach((line, i) => {
@@ -1394,25 +1447,30 @@ class PdfNotesView extends ItemView {
             let img = this._imgCache.get(s.data);
             if (!img) {
                 img = new Image(); img.src = s.data;
-                img.onload = () => { this._imgCache.set(s.data, img); this.requestRedraw(s.pn); };
+                img.onload = () => { 
+                    if (this._imgCache.size > 20) this._imgCache.clear();
+                    this._imgCache.set(s.data, img); 
+                    this.requestRedraw(s.pn); 
+                };
             } else {
                 ctx.drawImage(img, s.x, s.y, s.w, s.h);
             }
         } else if (!s.type || s.type === 'stroke') {
             if (!s.points || s.points.length < 2) return;
             ctx.beginPath();
-            ctx.moveTo(s.points[0].x, s.points[0].y);
             
             if (s.points.length === 2) {
+                ctx.moveTo(s.points[0].x, s.points[0].y);
                 ctx.lineTo(s.points[1].x, s.points[1].y);
             } else {
-                for (let i = 1; i < s.points.length - 2; i++) {
+                ctx.moveTo(s.points[0].x, s.points[0].y);
+                for (let i = 1; i < s.points.length - 1; i++) {
                     const xc = (s.points[i].x + s.points[i + 1].x) / 2;
                     const yc = (s.points[i].y + s.points[i + 1].y) / 2;
                     ctx.quadraticCurveTo(s.points[i].x, s.points[i].y, xc, yc);
                 }
-                const n = s.points.length;
-                ctx.quadraticCurveTo(s.points[n - 2].x, s.points[n - 2].y, s.points[n - 1].x, s.points[n - 1].y);
+                // Connect to the final point with a line or a final curve segment
+                ctx.lineTo(s.points[s.points.length - 1].x, s.points[s.points.length - 1].y);
             }
             ctx.stroke();
         } else if (s.type === 'rect') { ctx.beginPath(); ctx.strokeRect(s.x, s.y, s.w, s.h); }
@@ -1534,7 +1592,7 @@ class PdfNotesView extends ItemView {
         const sx = s.x * this.scale + r.left;
         const sy = s.y * this.scale + r.top;
 
-        inp.style.cssText = `position:absolute;left:${sx}px;top:${sy}px;z-index:9999;background:transparent;color:${s.color};border:none;padding:0;margin:0;font:${fontSize}px ${this.plugin.settings.textFont||'Inter'};outline:none;min-width:10px;line-height:1.2;overflow:hidden;resize:none;caret-color:${s.color};`;
+        inp.style.cssText = `position:absolute;left:${sx}px;top:${sy}px;z-index:9999;background:transparent;color:${s.color};border:none;padding:0;margin:0;font-size:${fontSize}px;font-family:"${this.plugin.settings.textFont||'Inter'}";line-height:1.2;outline:none;min-width:10px;overflow:hidden;resize:none;caret-color:${s.color};white-space:pre-wrap;`;
         
         const resize = () => {
             inp.style.height = 'auto';
@@ -1837,6 +1895,7 @@ class PdfNotesView extends ItemView {
     erase(pn, pos) { if ((this.plugin.settings?.eraserMode ?? 'stroke') === 'pixel') this.erasePixel(pn, pos); else this.eraseStroke(pn, pos); }
     pushUndo(pn, item) {
         this.undoStack.push({ pn, item });
+        if (this.undoStack.length > 30) this.undoStack.shift();
         this.redoStack = [];
     }
     undo() {
@@ -1878,7 +1937,7 @@ class PdfNotesView extends ItemView {
     scheduleSave() {
         if (this.saveTimer) clearTimeout(this.saveTimer);
         this._savePending = true;
-        this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 8000);
+        this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 20000);
     }
 
     // Saving as editable PDF Ink annotation (cross-device editable)

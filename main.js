@@ -21007,6 +21007,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     var _a, _b;
     const root = this.contentEl.closest(".pdf-notes-container") || this.contentEl;
     const isZen = root.classList.toggle("pdf-notes-zen-mode");
+    const st = this.scrollEl ? this.scrollEl.scrollTop : 0;
+    const sl = this.scrollEl ? this.scrollEl.scrollLeft : 0;
     if (isZen) {
       this._zenOrigParent = root.parentElement;
       this._zenOrigNext = root.nextSibling;
@@ -21018,6 +21020,12 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this._zenOrigParent.appendChild(root);
       this._zenOrigParent = null;
       this._zenOrigNext = null;
+    }
+    if (this.scrollEl) {
+      requestAnimationFrame(() => {
+        this.scrollEl.scrollTop = st;
+        this.scrollEl.scrollLeft = sl;
+      });
     }
     this.app.workspace.iterateAllLeaves((leaf) => {
       if (leaf.view.containerEl.contains(this.contentEl))
@@ -21203,6 +21211,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           d.inkCanvas.width = 0;
           d.inkCanvas.height = 0;
         }
+        if (d.liveCanvas) {
+          d.liveCanvas.width = 0;
+          d.liveCanvas.height = 0;
+        }
       }
       this.pageCanvases = {};
       this._renderedPages = /* @__PURE__ */ new Set();
@@ -21229,7 +21241,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           wrap.dataset.page = String(i);
         }
         wrap.empty();
-        wrap.style.cssText = `position:relative;background:#ffffff;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;margin-bottom:20px;width:${w}px;height:${h}px;`;
+        wrap.style.cssText = `position:relative;background:#ffffff;border-radius:3px;box-shadow:0 4px 18px rgba(0,0,0,0.5);flex-shrink:0;margin-bottom:20px;width:${Math.round(w)}px;height:${Math.round(h)}px;`;
         if (this._observers[i])
           this._observers[i].disconnect();
       }
@@ -21263,7 +21275,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     this._unloadTimer = setTimeout(() => {
       this._unloadTimer = null;
       const vis = this.visiblePage || 1;
-      const KEEP = 3;
+      const KEEP = 1;
       for (const numStr of Object.keys(this.pageCanvases)) {
         const num = parseInt(numStr);
         if (Math.abs(num - vis) > KEEP) {
@@ -21284,6 +21296,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (d.inkCanvas) {
       d.inkCanvas.width = 0;
       d.inkCanvas.height = 0;
+    }
+    if (d.liveCanvas) {
+      d.liveCanvas.width = 0;
+      d.liveCanvas.height = 0;
     }
     delete this.pageCanvases[num];
     (_a = this._renderedPages) == null ? void 0 : _a.delete(num);
@@ -21308,8 +21324,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       const page = await this.pdfDoc.getPage(num);
       const vp = page.getViewport({ scale: this.scale });
       this.pageSizes[num] = { width: vp.width, height: vp.height };
-      wrap.style.width = vp.width + "px";
-      wrap.style.height = vp.height + "px";
+      wrap.style.width = Math.round(vp.width) + "px";
+      wrap.style.height = Math.round(vp.height) + "px";
       wrap.empty();
       const pc = wrap.createEl("canvas");
       pc.width = vp.width;
@@ -21318,7 +21334,9 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       await page.render({ canvasContext: pc.getContext("2d"), viewport: vp }).promise;
       page.cleanup();
       const ic = wrap.createEl("canvas");
-      const dpr = window.devicePixelRatio || 1;
+      let dpr = window.devicePixelRatio || 1;
+      if (vp.width * dpr > 3e3)
+        dpr = 3e3 / vp.width;
       ic.width = vp.width * dpr;
       ic.height = vp.height * dpr;
       ic.style.width = `${vp.width}px`;
@@ -21328,7 +21346,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       ic.style.zIndex = "5";
       const ctx = ic.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, vp, wrap };
+      const lc = wrap.createEl("canvas");
+      lc.width = ic.width;
+      lc.height = ic.height;
+      lc.style.width = ic.style.width;
+      lc.style.height = ic.style.height;
+      lc.style.position = "absolute";
+      lc.style.inset = "0";
+      lc.style.zIndex = "6";
+      lc.style.pointerEvents = "none";
+      const lctx = lc.getContext("2d");
+      lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, vp, wrap };
       this.redraw(num);
     } catch (e) {
       console.error("[PDF.notes] Render error", num, e);
@@ -21416,7 +21445,9 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           this.finishFloatingInput();
         const inp = document.body.createEl("textarea");
         const fontSize = (this.plugin.settings.textSize || 16) * this.scale;
-        inp.style.cssText = `position:absolute;left:${e.clientX}px;top:${e.clientY - fontSize / 4}px;z-index:9999;background:transparent;color:${this.color};border:none;padding:0;margin:0;font:${fontSize}px ${this.plugin.settings.textFont || "Inter"};outline:none;min-width:10px;line-height:1.2;overflow:hidden;resize:none;caret-color:${this.color};`;
+        const sy2 = e.clientY - fontSize / 4;
+        p.y = (sy2 - r.top) / this.scale;
+        inp.style.cssText = `position:absolute;left:${e.clientX}px;top:${sy2}px;z-index:9999;background:transparent;color:${this.color};border:none;padding:0;margin:0;font-size:${fontSize}px;font-family:"${this.plugin.settings.textFont || "Inter"}";line-height:1.2;outline:none;min-width:10px;overflow:hidden;resize:none;caret-color:${this.color};white-space:pre-wrap;`;
         const resize = () => {
           inp.style.height = "auto";
           inp.style.height = inp.scrollHeight + "px";
@@ -21649,20 +21680,46 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this.snipRect = { x: Math.min(this.snipStart.x, p.x), y: Math.min(this.snipStart.y, p.y), w: Math.abs(p.x - this.snipStart.x), h: Math.abs(p.y - this.snipStart.y) };
         this.requestRedraw(this.activePn);
       } else if (useTool === "pen" && this.curStroke) {
-        const last2 = this.curStroke.points[this.curStroke.points.length - 1];
-        if (Math.hypot(p.x - last2.x, p.y - last2.y) > 0.1) {
-          this.curStroke.points.push(p);
-          if (this.opacity < 1) {
-            this.requestRedraw(this.activePn);
-          } else {
-            this.drawIncremental(this.activePn, this.curStroke);
+        const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+        let added = false;
+        for (const ce of coalesced) {
+          const cp = { x: (ce.clientX - r.left) / this.scale, y: (ce.clientY - r.top) / this.scale };
+          const last2 = this.curStroke.points[this.curStroke.points.length - 1];
+          if (Math.hypot(cp.x - last2.x, cp.y - last2.y) > 0.1 / this.scale) {
+            this.curStroke.points.push(cp);
+            added = true;
+          }
+        }
+        if (added) {
+          const d = this.pageCanvases[this.activePn];
+          if (d && d.liveCanvas) {
+            const lctx = d.liveCanvas.getContext("2d");
+            lctx.save();
+            lctx.setTransform(1, 0, 0, 1, 0, 0);
+            lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+            lctx.restore();
+            lctx.save();
+            lctx.scale(this.scale, this.scale);
+            this.drawShape(lctx, this.curStroke);
+            lctx.restore();
           }
         }
       } else if (useTool === "eraser") {
         this.erase(this.activePn, p);
       } else if (["rect", "circle", "line", "arrow"].includes(useTool) && this.shapeStart) {
         this.curPreview = this.buildShape(this.shapeStart, p);
-        this.requestRedraw(this.activePn);
+        const d = this.pageCanvases[this.activePn];
+        if (d && d.liveCanvas) {
+          const lctx = d.liveCanvas.getContext("2d");
+          lctx.save();
+          lctx.setTransform(1, 0, 0, 1, 0, 0);
+          lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+          lctx.restore();
+          lctx.save();
+          lctx.scale(this.scale, this.scale);
+          this.drawShape(lctx, this.curPreview);
+          lctx.restore();
+        }
       }
     };
     const onE = (e) => {
@@ -21714,6 +21771,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         } else if (this.curPreview) {
           (this.strokes[this.activePn] = this.strokes[this.activePn] || []).push(this.curPreview);
           this.pushUndo(this.activePn, this.curPreview);
+        }
+        const d = this.pageCanvases[this.activePn];
+        if (d && d.liveCanvas) {
+          const lctx = d.liveCanvas.getContext("2d");
+          lctx.save();
+          lctx.setTransform(1, 0, 0, 1, 0, 0);
+          lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
+          lctx.restore();
         }
         this.curStroke = null;
         this.curPreview = null;
@@ -21767,28 +21832,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       this._drawReq = null;
     });
   }
-  drawIncremental(pn, s) {
-    var _a;
-    const d = this.pageCanvases[pn];
-    if (!d || s.points.length < 3)
-      return;
-    const ctx = d.inkCanvas.getContext("2d"), pts = s.points;
-    const i = pts.length - 1;
-    const midPrev = { x: (pts[i - 2].x + pts[i - 1].x) / 2, y: (pts[i - 2].y + pts[i - 1].y) / 2 };
-    const midNow = { x: (pts[i - 1].x + pts[i].x) / 2, y: (pts[i - 1].y + pts[i].y) / 2 };
-    ctx.save();
-    ctx.scale(this.scale, this.scale);
-    ctx.beginPath();
-    ctx.globalAlpha = (_a = s.opacity) != null ? _a : 1;
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = s.width || 2;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.moveTo(midPrev.x, midPrev.y);
-    ctx.quadraticCurveTo(pts[i - 1].x, pts[i - 1].y, midNow.x, midNow.y);
-    ctx.stroke();
-    ctx.restore();
-  }
+  // Removed drawIncremental in favor of liveCanvas + full stroke redraw for performance and smoothness.
   drawSeg(canvas, s) {
     var _a;
     const pts = s.points;
@@ -21858,7 +21902,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (s.type === "text") {
       ctx.fillStyle = s.color;
       const sz = s.size || 16;
-      ctx.font = `${sz}px ${this.plugin.settings.textFont || "Inter"}`;
+      ctx.font = `${sz}px "${this.plugin.settings.textFont || "Inter"}"`;
       ctx.textBaseline = "top";
       const lines = s.text.split("\n");
       lines.forEach((line, i) => {
@@ -21872,6 +21916,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         img = new Image();
         img.src = s.data;
         img.onload = () => {
+          if (this._imgCache.size > 20)
+            this._imgCache.clear();
           this._imgCache.set(s.data, img);
           this.requestRedraw(s.pn);
         };
@@ -21882,17 +21928,17 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       if (!s.points || s.points.length < 2)
         return;
       ctx.beginPath();
-      ctx.moveTo(s.points[0].x, s.points[0].y);
       if (s.points.length === 2) {
+        ctx.moveTo(s.points[0].x, s.points[0].y);
         ctx.lineTo(s.points[1].x, s.points[1].y);
       } else {
-        for (let i = 1; i < s.points.length - 2; i++) {
+        ctx.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length - 1; i++) {
           const xc = (s.points[i].x + s.points[i + 1].x) / 2;
           const yc = (s.points[i].y + s.points[i + 1].y) / 2;
           ctx.quadraticCurveTo(s.points[i].x, s.points[i].y, xc, yc);
         }
-        const n = s.points.length;
-        ctx.quadraticCurveTo(s.points[n - 2].x, s.points[n - 2].y, s.points[n - 1].x, s.points[n - 1].y);
+        ctx.lineTo(s.points[s.points.length - 1].x, s.points[s.points.length - 1].y);
       }
       ctx.stroke();
     } else if (s.type === "rect") {
@@ -22056,7 +22102,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const fontSize = (s.size || 16) * this.scale;
     const sx2 = s.x * this.scale + r.left;
     const sy2 = s.y * this.scale + r.top;
-    inp.style.cssText = `position:absolute;left:${sx2}px;top:${sy2}px;z-index:9999;background:transparent;color:${s.color};border:none;padding:0;margin:0;font:${fontSize}px ${this.plugin.settings.textFont || "Inter"};outline:none;min-width:10px;line-height:1.2;overflow:hidden;resize:none;caret-color:${s.color};`;
+    inp.style.cssText = `position:absolute;left:${sx2}px;top:${sy2}px;z-index:9999;background:transparent;color:${s.color};border:none;padding:0;margin:0;font-size:${fontSize}px;font-family:"${this.plugin.settings.textFont || "Inter"}";line-height:1.2;outline:none;min-width:10px;overflow:hidden;resize:none;caret-color:${s.color};white-space:pre-wrap;`;
     const resize = () => {
       inp.style.height = "auto";
       inp.style.height = inp.scrollHeight + "px";
@@ -22419,6 +22465,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
   }
   pushUndo(pn, item) {
     this.undoStack.push({ pn, item });
+    if (this.undoStack.length > 30)
+      this.undoStack.shift();
     this.redoStack = [];
   }
   undo() {
@@ -22463,7 +22511,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (this.saveTimer)
       clearTimeout(this.saveTimer);
     this._savePending = true;
-    this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 8e3);
+    this.saveTimer = setTimeout(() => this.saveAsAnnotations(), 2e4);
   }
   // Saving as editable PDF Ink annotation (cross-device editable)
   async saveAsAnnotations() {
