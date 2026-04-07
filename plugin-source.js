@@ -44,11 +44,9 @@ const LUCIDE_ICONS = {
     save: 'save', flatten: 'flame'
 };
 
-
-
-
 function getThemeColors(mode) {
     if (mode === 'light') return {
+
         bg: '#eff1f5', toolbarBg: '#e6e9ef', border: '#ccd0da', btnBg: '#ccd0da',
         btnBorder: '#bcc0cc', btnHoverBg: '#bcc0cc', mutedText: '#6c6f85',
         text: '#4c4f69', accent: '#1e66f5', accentText: '#eff1f5',
@@ -488,7 +486,18 @@ class PdfNotesView extends ItemView {
             const { r: cR } = createRow('Color');
             this.colorInput = cR.createEl('input', { type: 'color', style: `width:100%;height:24px;padding:1px;background:${T.inputBg};border:1px solid ${T.btnBorder};border-radius:4px;cursor:pointer;` });
             this.colorInput.value = this.color;
-            this.colorInput.oninput = e => { this.color = e.target.value; this.setTool('pen'); };
+            this.colorInput.oninput = e => { 
+                this.color = e.target.value; 
+                if (this.selectedElements.length > 0) {
+                    this.selectedElements.forEach(sel => { if (sel.s.type !== 'image') sel.s.color = this.color; });
+                    const pns = new Set(this.selectedElements.map(sel => sel.pn));
+                    pns.forEach(pn => this.updateCache(pn));
+                    this.requestRedrawAll();
+                    this.scheduleSave();
+                } else {
+                    this.setTool('pen'); 
+                }
+            };
 
             const { r: tR, v: tV } = createRow('Width');
             tV.textContent = this.lineWidth + 'px';
@@ -569,7 +578,18 @@ class PdfNotesView extends ItemView {
             const { r: cR } = createRow('Text Color');
             const textColorInput = cR.createEl('input', { type: 'color', style: `width:100%;height:24px;padding:1px;background:${T.inputBg};border:1px solid ${T.btnBorder};border-radius:4px;cursor:pointer;` });
             textColorInput.value = this.color;
-            textColorInput.oninput = e => { this.color = e.target.value; if (this.colorInput) this.colorInput.value = this.color; this.setTool('text'); };
+            textColorInput.oninput = e => { 
+                this.color = e.target.value; if (this.colorInput) this.colorInput.value = this.color; 
+                if (this.selectedElements.length > 0) {
+                    this.selectedElements.forEach(sel => { if (sel.s.type !== 'image') sel.s.color = this.color; });
+                    const pns = new Set(this.selectedElements.map(sel => sel.pn));
+                    pns.forEach(pn => this.updateCache(pn));
+                    this.requestRedrawAll();
+                    this.scheduleSave();
+                } else {
+                    this.setTool('text'); 
+                }
+            };
 
             const { r: sR, v: sV } = createRow('Font Size');
             sV.textContent = (this.plugin.settings.textSize || 16) + 'px';
@@ -579,6 +599,13 @@ class PdfNotesView extends ItemView {
                 this.plugin.settings.textSize = parseInt(e.target.value); 
                 sV.textContent = this.plugin.settings.textSize + 'px'; 
                 this.plugin.saveSettings(); 
+                if (this.selectedElements.length > 0) {
+                    this.selectedElements.forEach(sel => { if (sel.s.type === 'text') sel.s.size = this.plugin.settings.textSize; });
+                    const pns = new Set(this.selectedElements.map(sel => sel.pn));
+                    pns.forEach(pn => this.updateCache(pn));
+                    this.requestRedrawAll();
+                    this.scheduleSave();
+                }
             };
 
             const { r: fR } = createRow('Font Family');
@@ -952,9 +979,28 @@ class PdfNotesView extends ItemView {
             const lctx = lc.getContext('2d');
             lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, vp, wrap };
+            // Offscreen cache for static strokes
+            const cc = document.createElement('canvas');
+            cc.width = ic.width; cc.height = ic.height;
+            const cctx = cc.getContext('2d');
+            cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, cacheCanvas: cc, vp, wrap };
+            this.updateCache(num);
             this.redraw(num);
         } catch (e) { console.error('[PDF.notes] Render error', num, e); }
+    }
+
+    updateCache(pn) {
+        const d = this.pageCanvases[pn]; if (!d || !d.cacheCanvas) return;
+        const ctx = d.cacheCanvas.getContext('2d');
+        ctx.clearRect(0, 0, d.vp.width, d.vp.height);
+        ctx.save(); ctx.scale(this.scale, this.scale);
+        const selIds = new Set(this.selectedElements.map(sel => sel.s));
+        (this.strokes[pn] || []).forEach(s => {
+            if (!selIds.has(s)) this.drawShape(ctx, s);
+        });
+        ctx.restore();
     }
 
     // Logic for rebuilding handled by primary rebuildAll function above
@@ -1128,8 +1174,18 @@ class PdfNotesView extends ItemView {
 
                 // Check resize handles first
                 for (let sel of this.selectedElements) {
-                    if (sel.pn === page.pn && (sel.s.type === 'image' || sel.s.type === 'rect')) {
-                        const hX = sel.s.x + sel.s.w, hY = sel.s.y + sel.s.h;
+                    if (sel.pn === page.pn && (sel.s.type === 'image' || sel.s.type === 'rect' || sel.s.type === 'text')) {
+                        const sz = (sel.s.size || 16);
+                        let hX, hY;
+                        if (sel.s.type === 'text') {
+                            const lines = sel.s.text.split('\n');
+                            const maxLen = Math.max(...lines.map(l => l.length));
+                            hX = sel.s.x + (maxLen * sz * 0.6);
+                            hY = sel.s.y + (lines.length * sz * 1.2);
+                        } else {
+                            hX = sel.s.x + sel.s.w; hY = sel.s.y + sel.s.h;
+                        }
+
                         if (Math.hypot(p.x - hX, p.y - hY) < 15) {
                             this.isResizing = true; this.activeHandle = sel.s; this.moveStart = p;
                             return;
@@ -1138,7 +1194,12 @@ class PdfNotesView extends ItemView {
                 }
                 const hit = this.hitTest(page.pn, p);
                 if (hit) {
-                    if (!this.selectedElements.some(sel => sel.s === hit)) this.selectedElements = [{ pn: page.pn, s: hit }];
+                    if (!this.selectedElements.some(sel => sel.s === hit)) {
+                        const oldPns = new Set(this.selectedElements.map(sel => sel.pn));
+                        this.selectedElements = [{ pn: page.pn, s: hit }];
+                        oldPns.add(page.pn);
+                        oldPns.forEach(pn => this.updateCache(pn));
+                    }
                     this.isMoving = true; this.moveStart = p;
                 } else {
                     // Prüfen, ob wir in den Bereich eines bereits markierten Elements auf dieser Seite klicken
@@ -1164,11 +1225,14 @@ class PdfNotesView extends ItemView {
                         this.isMoving = true; this.moveStart = p;
                     } else {
                         this.selectedElements = [];
+                        this.updateCache(page.pn);
                     }
                 }
                 this.requestRedrawAll();
             } else if (useTool === 'lasso') {
                 this.lassoStart = p;
+                this.selectedElements = [];
+                this.updateCache(page.pn);
                 this.lassoRect = { x: p.x, y: p.y, w: 0, h: 0 };
             } else if (useTool === 'pen') {
                 this.curStroke = { type: 'stroke', color: this.color, opacity: this.opacity, width: this.lineWidth, points: [p], pn: page.pn };
@@ -1218,6 +1282,9 @@ class PdfNotesView extends ItemView {
                         const aspect = this.activeHandle.w / this.activeHandle.h;
                         this.activeHandle.w = Math.max(10, this.activeHandle.w + dx);
                         this.activeHandle.h = this.activeHandle.w / aspect;
+                    } else if (this.activeHandle.type === 'text') {
+                        const oldSize = this.activeHandle.size || 16;
+                        this.activeHandle.size = Math.max(8, Math.min(150, oldSize + (dx + dy) / 2));
                     } else {
                         this.activeHandle.w = Math.max(10, this.activeHandle.w + dx);
                         this.activeHandle.h = Math.max(10, this.activeHandle.h + dy);
@@ -1347,6 +1414,7 @@ class PdfNotesView extends ItemView {
                     lctx.restore();
                 }
 
+                this.updateCache(this.activePn);
                 this.curStroke = null; this.curPreview = null; this.shapeStart = null;
                 this.activeStrokeTool = null;
                 this.redraw(this.activePn);
@@ -1405,15 +1473,20 @@ class PdfNotesView extends ItemView {
         const isSelected = this.selectedElements.some(sel => sel.s === s);
         if (isSelected) {
             ctx.save(); ctx.strokeStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || 'dark')).selStroke; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
-            if (s.type === 'text') {
-                const lines = s.text.split('\n');
-                const sz = s.size || 16;
-                const maxLen = Math.max(...lines.map(l => l.length));
-                ctx.strokeRect(s.x-2, s.y-1, (maxLen * sz * 0.6)+4, (lines.length * sz * 1.2)+2);
-            }
-            else if (s.type === 'image' || s.type === 'rect') {
-                ctx.strokeRect(s.x-2, s.y-2, s.w+4, s.h+4);
-                ctx.setLineDash([]); ctx.fillStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || 'dark')).selStroke; ctx.fillRect(s.x + s.w - 4, s.y + s.h - 4, 8, 8);
+            if (s.type === 'image' || s.type === 'rect' || s.type === 'text') {
+                let hX, hY;
+                if (s.type === 'text') {
+                    const lines = s.text.split('\n');
+                    const sz = s.size || 16;
+                    const maxLen = Math.max(...lines.map(l => l.length));
+                    hX = s.x + (maxLen * sz * 0.6);
+                    hY = s.y + (lines.length * sz * 1.2);
+                    ctx.strokeRect(s.x-2, s.y-1, (maxLen * sz * 0.6)+4, (lines.length * sz * 1.2)+2);
+                } else {
+                    hX = s.x + s.w; hY = s.y + s.h;
+                    ctx.strokeRect(s.x-2, s.y-2, s.w+4, s.h+4);
+                }
+                ctx.setLineDash([]); ctx.fillStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || 'dark')).selStroke; ctx.fillRect(hX - 4, hY - 4, 8, 8);
             }
             else if (s.type === 'circle') { ctx.beginPath(); ctx.ellipse(s.cx, s.cy, s.rx+2, s.ry+2, 0, 0, Math.PI*2); ctx.stroke(); }
             else if (s.points) {
@@ -1489,11 +1562,17 @@ class PdfNotesView extends ItemView {
     redraw(pn) {
         const d = this.pageCanvases[pn]; if (!d) return;
         const ctx = d.inkCanvas.getContext('2d'); 
-        // Clear using logical units (since dpr transform is active)
         ctx.clearRect(0, 0, d.vp.width, d.vp.height);
+        
+        // Draw static strokes from cache
+        if (d.cacheCanvas) {
+            ctx.drawImage(d.cacheCanvas, 0, 0, d.vp.width, d.vp.height);
+        }
+
         ctx.save(); ctx.scale(this.scale, this.scale);
+        const selIds = new Set(this.selectedElements.map(sel => sel.s));
         (this.strokes[pn] || []).forEach(s => {
-            if (s) this.drawShape(ctx, s);
+            if (s && selIds.has(s)) this.drawShape(ctx, s);
         });
         ctx.restore();
     }
@@ -1578,6 +1657,7 @@ class PdfNotesView extends ItemView {
             }
             if (pts.some(p => isInside(p))) this.selectedElements.push({ pn, s });
         });
+        this.updateCache(this.activePn);
         if (this.selectedElements.length > 0) this.updateToolbar();
     }
 
@@ -1646,6 +1726,7 @@ class PdfNotesView extends ItemView {
         
         el.remove();
         this.floatingInput = null;
+        this.updateCache(pn);
         this.redraw(pn); 
         this.scheduleSave();
     }
@@ -1727,6 +1808,7 @@ class PdfNotesView extends ItemView {
         }
 
         this.snipRect = null; this.snipStart = null; this.isSnipping = false;
+        this.updateCache(pn);
         this.redraw(pn);
         this.setTool('scroll');
     }
@@ -1788,6 +1870,7 @@ class PdfNotesView extends ItemView {
                 
                 (this.strokes[pn] = this.strokes[pn] || []).push(s);
                 this.pushUndo(pn, s);
+                this.updateCache(pn);
                 this.redraw(pn);
                 this.scheduleSave();
                 new Notice('Image pasted into view!');
@@ -1831,7 +1914,7 @@ class PdfNotesView extends ItemView {
         });
         const pns = new Set(this.selectedElements.map(sel => sel.pn));
         this.selectedElements = [];
-        pns.forEach(pn => this.redraw(pn));
+        pns.forEach(pn => { this.updateCache(pn); this.redraw(pn); });
         this.scheduleSave();
         this.updateToolbar();
     }
@@ -1870,7 +1953,7 @@ class PdfNotesView extends ItemView {
             if (!s.type || s.type === 'stroke') return !s.points.some(p => Math.hypot(p.x - pos.x, p.y - pos.y) < r);
             return !this.shapeHitTest(s, pos, r);
         });
-        if (this.strokes[pn].length !== before) { this._eraseDirty = true; this.requestRedraw(pn); }
+        if (this.strokes[pn].length !== before) { this._eraseDirty = true; this.updateCache(pn); this.requestRedraw(pn); }
     }
     // Pixel eraser: cuts strokes, BUT shapes are deleted as a whole just like the stroke eraser
     erasePixel(pn, pos) {
@@ -1890,7 +1973,7 @@ class PdfNotesView extends ItemView {
             if (seg.length >= 2) segs.push(seg);
             segs.forEach(sg => result.push({ ...s, points: sg }));
         }
-        if (changed) { this.strokes[pn] = result; this._eraseDirty = true; this.requestRedraw(pn); }
+        if (changed) { this.strokes[pn] = result; this._eraseDirty = true; this.updateCache(pn); this.requestRedraw(pn); }
     }
     erase(pn, pos) { if ((this.plugin.settings?.eraserMode ?? 'stroke') === 'pixel') this.erasePixel(pn, pos); else this.eraseStroke(pn, pos); }
     pushUndo(pn, item) {
@@ -1907,6 +1990,7 @@ class PdfNotesView extends ItemView {
                 if (idx !== -1) {
                     list.splice(idx, 1);
                     this.redoStack.push({ pn, item });
+                    this.updateCache(pn);
                     this.redraw(pn); this.scheduleSave();
                     return;
                 }
@@ -1920,6 +2004,7 @@ class PdfNotesView extends ItemView {
             if (this.strokes[p]?.length > 0) {
                 const item = this.strokes[p].pop();
                 this.redoStack.push({ pn: p, item });
+                this.updateCache(p);
                 this.redraw(p); this.scheduleSave(); break;
             }
         }
@@ -1929,6 +2014,7 @@ class PdfNotesView extends ItemView {
         const { pn, item } = this.redoStack.pop();
         (this.strokes[pn] = this.strokes[pn] || []).push(item);
         this.undoStack.push({ pn, item });
+        this.updateCache(pn);
         this.redraw(pn); this.scheduleSave();
     }
 

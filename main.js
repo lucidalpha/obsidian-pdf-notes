@@ -20830,7 +20830,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       this.colorInput.value = this.color;
       this.colorInput.oninput = (e) => {
         this.color = e.target.value;
-        this.setTool("pen");
+        if (this.selectedElements.length > 0) {
+          this.selectedElements.forEach((sel) => {
+            if (sel.s.type !== "image")
+              sel.s.color = this.color;
+          });
+          const pns = new Set(this.selectedElements.map((sel) => sel.pn));
+          pns.forEach((pn) => this.updateCache(pn));
+          this.requestRedrawAll();
+          this.scheduleSave();
+        } else {
+          this.setTool("pen");
+        }
       };
       const { r: tR, v: tV } = createRow("Width");
       tV.textContent = this.lineWidth + "px";
@@ -20924,7 +20935,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this.color = e.target.value;
         if (this.colorInput)
           this.colorInput.value = this.color;
-        this.setTool("text");
+        if (this.selectedElements.length > 0) {
+          this.selectedElements.forEach((sel) => {
+            if (sel.s.type !== "image")
+              sel.s.color = this.color;
+          });
+          const pns = new Set(this.selectedElements.map((sel) => sel.pn));
+          pns.forEach((pn) => this.updateCache(pn));
+          this.requestRedrawAll();
+          this.scheduleSave();
+        } else {
+          this.setTool("text");
+        }
       };
       const { r: sR, v: sV } = createRow("Font Size");
       sV.textContent = (this.plugin.settings.textSize || 16) + "px";
@@ -20936,6 +20958,16 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         this.plugin.settings.textSize = parseInt(e.target.value);
         sV.textContent = this.plugin.settings.textSize + "px";
         this.plugin.saveSettings();
+        if (this.selectedElements.length > 0) {
+          this.selectedElements.forEach((sel) => {
+            if (sel.s.type === "text")
+              sel.s.size = this.plugin.settings.textSize;
+          });
+          const pns = new Set(this.selectedElements.map((sel) => sel.pn));
+          pns.forEach((pn) => this.updateCache(pn));
+          this.requestRedrawAll();
+          this.scheduleSave();
+        }
       };
       const { r: fR } = createRow("Font Family");
       const fontIn = fR.createEl("select", { style: `width:100%;background:${T.inputBg};color:${T.selectText};border:1px solid ${T.btnBorder};border-radius:4px;font-size:12px;` });
@@ -21357,11 +21389,32 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       lc.style.pointerEvents = "none";
       const lctx = lc.getContext("2d");
       lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, vp, wrap };
+      const cc = document.createElement("canvas");
+      cc.width = ic.width;
+      cc.height = ic.height;
+      const cctx = cc.getContext("2d");
+      cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.pageCanvases[num] = { pdfCanvas: pc, inkCanvas: ic, liveCanvas: lc, cacheCanvas: cc, vp, wrap };
+      this.updateCache(num);
       this.redraw(num);
     } catch (e) {
       console.error("[PDF.notes] Render error", num, e);
     }
+  }
+  updateCache(pn) {
+    const d = this.pageCanvases[pn];
+    if (!d || !d.cacheCanvas)
+      return;
+    const ctx = d.cacheCanvas.getContext("2d");
+    ctx.clearRect(0, 0, d.vp.width, d.vp.height);
+    ctx.save();
+    ctx.scale(this.scale, this.scale);
+    const selIds = new Set(this.selectedElements.map((sel) => sel.s));
+    (this.strokes[pn] || []).forEach((s) => {
+      if (!selIds.has(s))
+        this.drawShape(ctx, s);
+    });
+    ctx.restore();
   }
   // Logic for rebuilding handled by primary rebuildAll function above
   setupGlobalEvents() {
@@ -21542,8 +21595,18 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           }
         }
         for (let sel of this.selectedElements) {
-          if (sel.pn === page.pn && (sel.s.type === "image" || sel.s.type === "rect")) {
-            const hX = sel.s.x + sel.s.w, hY = sel.s.y + sel.s.h;
+          if (sel.pn === page.pn && (sel.s.type === "image" || sel.s.type === "rect" || sel.s.type === "text")) {
+            const sz = sel.s.size || 16;
+            let hX, hY;
+            if (sel.s.type === "text") {
+              const lines = sel.s.text.split("\n");
+              const maxLen = Math.max(...lines.map((l) => l.length));
+              hX = sel.s.x + maxLen * sz * 0.6;
+              hY = sel.s.y + lines.length * sz * 1.2;
+            } else {
+              hX = sel.s.x + sel.s.w;
+              hY = sel.s.y + sel.s.h;
+            }
             if (Math.hypot(p.x - hX, p.y - hY) < 15) {
               this.isResizing = true;
               this.activeHandle = sel.s;
@@ -21554,8 +21617,12 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         }
         const hit = this.hitTest(page.pn, p);
         if (hit) {
-          if (!this.selectedElements.some((sel) => sel.s === hit))
+          if (!this.selectedElements.some((sel) => sel.s === hit)) {
+            const oldPns = new Set(this.selectedElements.map((sel) => sel.pn));
             this.selectedElements = [{ pn: page.pn, s: hit }];
+            oldPns.add(page.pn);
+            oldPns.forEach((pn) => this.updateCache(pn));
+          }
           this.isMoving = true;
           this.moveStart = p;
         } else {
@@ -21587,11 +21654,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             this.moveStart = p;
           } else {
             this.selectedElements = [];
+            this.updateCache(page.pn);
           }
         }
         this.requestRedrawAll();
       } else if (useTool === "lasso") {
         this.lassoStart = p;
+        this.selectedElements = [];
+        this.updateCache(page.pn);
         this.lassoRect = { x: p.x, y: p.y, w: 0, h: 0 };
       } else if (useTool === "pen") {
         this.curStroke = { type: "stroke", color: this.color, opacity: this.opacity, width: this.lineWidth, points: [p], pn: page.pn };
@@ -21638,6 +21708,9 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             const aspect = this.activeHandle.w / this.activeHandle.h;
             this.activeHandle.w = Math.max(10, this.activeHandle.w + dx);
             this.activeHandle.h = this.activeHandle.w / aspect;
+          } else if (this.activeHandle.type === "text") {
+            const oldSize = this.activeHandle.size || 16;
+            this.activeHandle.size = Math.max(8, Math.min(150, oldSize + (dx + dy) / 2));
           } else {
             this.activeHandle.w = Math.max(10, this.activeHandle.w + dx);
             this.activeHandle.h = Math.max(10, this.activeHandle.h + dy);
@@ -21780,6 +21853,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
           lctx.restore();
         }
+        this.updateCache(this.activePn);
         this.curStroke = null;
         this.curPreview = null;
         this.shapeStart = null;
@@ -21864,16 +21938,23 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       ctx.strokeStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || "dark")).selStroke;
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 2]);
-      if (s.type === "text") {
-        const lines = s.text.split("\n");
-        const sz = s.size || 16;
-        const maxLen = Math.max(...lines.map((l) => l.length));
-        ctx.strokeRect(s.x - 2, s.y - 1, maxLen * sz * 0.6 + 4, lines.length * sz * 1.2 + 2);
-      } else if (s.type === "image" || s.type === "rect") {
-        ctx.strokeRect(s.x - 2, s.y - 2, s.w + 4, s.h + 4);
+      if (s.type === "image" || s.type === "rect" || s.type === "text") {
+        let hX, hY;
+        if (s.type === "text") {
+          const lines = s.text.split("\n");
+          const sz = s.size || 16;
+          const maxLen = Math.max(...lines.map((l) => l.length));
+          hX = s.x + maxLen * sz * 0.6;
+          hY = s.y + lines.length * sz * 1.2;
+          ctx.strokeRect(s.x - 2, s.y - 1, maxLen * sz * 0.6 + 4, lines.length * sz * 1.2 + 2);
+        } else {
+          hX = s.x + s.w;
+          hY = s.y + s.h;
+          ctx.strokeRect(s.x - 2, s.y - 2, s.w + 4, s.h + 4);
+        }
         ctx.setLineDash([]);
         ctx.fillStyle = (this._theme || getThemeColors(this.plugin.settings.themeMode || "dark")).selStroke;
-        ctx.fillRect(s.x + s.w - 4, s.y + s.h - 4, 8, 8);
+        ctx.fillRect(hX - 4, hY - 4, 8, 8);
       } else if (s.type === "circle") {
         ctx.beginPath();
         ctx.ellipse(s.cx, s.cy, s.rx + 2, s.ry + 2, 0, 0, Math.PI * 2);
@@ -21975,10 +22056,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       return;
     const ctx = d.inkCanvas.getContext("2d");
     ctx.clearRect(0, 0, d.vp.width, d.vp.height);
+    if (d.cacheCanvas) {
+      ctx.drawImage(d.cacheCanvas, 0, 0, d.vp.width, d.vp.height);
+    }
     ctx.save();
     ctx.scale(this.scale, this.scale);
+    const selIds = new Set(this.selectedElements.map((sel) => sel.s));
     (this.strokes[pn] || []).forEach((s) => {
-      if (s)
+      if (s && selIds.has(s))
         this.drawShape(ctx, s);
     });
     ctx.restore();
@@ -22089,6 +22174,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       if (pts.some((p) => isInside(p)))
         this.selectedElements.push({ pn, s });
     });
+    this.updateCache(this.activePn);
     if (this.selectedElements.length > 0)
       this.updateToolbar();
   }
@@ -22156,6 +22242,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     }
     el.remove();
     this.floatingInput = null;
+    this.updateCache(pn);
     this.redraw(pn);
     this.scheduleSave();
   }
@@ -22243,6 +22330,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     this.snipRect = null;
     this.snipStart = null;
     this.isSnipping = false;
+    this.updateCache(pn);
     this.redraw(pn);
     this.setTool("scroll");
   }
@@ -22296,6 +22384,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         };
         (this.strokes[pn] = this.strokes[pn] || []).push(s);
         this.pushUndo(pn, s);
+        this.updateCache(pn);
         this.redraw(pn);
         this.scheduleSave();
         new import_obsidian.Notice("Image pasted into view!");
@@ -22350,7 +22439,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     });
     const pns = new Set(this.selectedElements.map((sel) => sel.pn));
     this.selectedElements = [];
-    pns.forEach((pn) => this.redraw(pn));
+    pns.forEach((pn) => {
+      this.updateCache(pn);
+      this.redraw(pn);
+    });
     this.scheduleSave();
     this.updateToolbar();
   }
@@ -22416,6 +22508,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     });
     if (this.strokes[pn].length !== before) {
       this._eraseDirty = true;
+      this.updateCache(pn);
       this.requestRedraw(pn);
     }
   }
@@ -22453,6 +22546,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (changed) {
       this.strokes[pn] = result;
       this._eraseDirty = true;
+      this.updateCache(pn);
       this.requestRedraw(pn);
     }
   }
@@ -22479,6 +22573,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         if (idx !== -1) {
           list.splice(idx, 1);
           this.redoStack.push({ pn, item });
+          this.updateCache(pn);
           this.redraw(pn);
           this.scheduleSave();
           return;
@@ -22491,6 +22586,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       if (((_a = this.strokes[p]) == null ? void 0 : _a.length) > 0) {
         const item = this.strokes[p].pop();
         this.redoStack.push({ pn: p, item });
+        this.updateCache(p);
         this.redraw(p);
         this.scheduleSave();
         break;
@@ -22503,6 +22599,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const { pn, item } = this.redoStack.pop();
     (this.strokes[pn] = this.strokes[pn] || []).push(item);
     this.undoStack.push({ pn, item });
+    this.updateCache(pn);
     this.redraw(pn);
     this.scheduleSave();
   }
