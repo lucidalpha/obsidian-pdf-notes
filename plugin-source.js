@@ -369,10 +369,36 @@ class PdfNotesView extends ItemView {
         if (isRight) {
             tb.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 3px;background:${T.toolbarBg};border-left:1px solid ${T.border};flex-shrink:0;width:36px;order:2;`;
         } else {
-            tb.style.cssText = `display:flex;align-items:center;gap:1px;padding:3px 6px;background:${T.toolbarBg};border-bottom:1px solid ${T.border};flex-shrink:0;height:36px;`;
+            tb.style.cssText = `display:flex;align-items:center;gap:1px;padding:3px 4px;background:${T.toolbarBg};border-bottom:1px solid ${T.border};flex-shrink:0;height:36px;`;
         }
 
-        this.buildToolbar(tb);
+        const tbInner = tb.createDiv();
+        tbInner.style.cssText = isRight
+            ? 'display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;overflow-y:auto;scrollbar-width:none;'
+            : 'display:flex;align-items:center;gap:1px;flex:1;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;';
+        this.buildToolbar(tbInner);
+
+        const collapseBtn = tb.createEl('button');
+        collapseBtn.className = 'pdf-tool-btn';
+        collapseBtn.title = 'Toggle toolbar';
+        collapseBtn.style.cssText = 'flex-shrink:0;opacity:0.35;padding:4px;';
+        if (this._tbCollapsed === undefined) this._tbCollapsed = false;
+        const refreshCollapseBtn = () => {
+            collapseBtn.empty();
+            const iconName = isRight
+                ? (this._tbCollapsed ? 'chevrons-down' : 'chevrons-up')
+                : (this._tbCollapsed ? 'chevrons-right' : 'chevrons-left');
+            setIcon(collapseBtn, iconName);
+            const svg = collapseBtn.querySelector('svg');
+            if (svg) { svg.style.width = '14px'; svg.style.height = '14px'; svg.setAttribute('stroke-width', '2'); }
+        };
+        refreshCollapseBtn();
+        if (this._tbCollapsed) tbInner.style.display = 'none';
+        collapseBtn.addEventListener('click', () => {
+            this._tbCollapsed = !this._tbCollapsed;
+            tbInner.style.display = this._tbCollapsed ? 'none' : 'flex';
+            refreshCollapseBtn();
+        });
 
         this.scrollEl = root.createDiv();
         this.scrollEl.addClass('pdf-notes-scroll');
@@ -465,10 +491,9 @@ class PdfNotesView extends ItemView {
             this.btnLasso = b('lasso', 'Lasso Selection', 'lasso', () => this.setTool('lasso'));
         
         if (this.plugin.settings.enabledTools.includes('pen')) {
-            this.btnPen = b('pen', 'Pen – Click again for color, width & opacity', 'pen', () => {
-                const wasPen = this.tool === 'pen';
+            this.btnPen = b('pen', 'Pen – Click for color, width & opacity', 'pen', () => {
                 this.setTool('pen');
-                if (wasPen) this.toggleMenu(this._penMenu, this.btnPen);
+                this.toggleMenu(this._penMenu, this.btnPen);
             });
             this.btnPen.classList.add('has-dropdown');
             
@@ -513,10 +538,9 @@ class PdfNotesView extends ItemView {
         }
 
         if (this.plugin.settings.enabledTools.includes('eraser')) {
-            this.btnErase = b('eraser', 'Eraser – Click again for mode & size', 'eraser', () => {
-                const wasE = this.tool === 'eraser';
+            this.btnErase = b('eraser', 'Eraser – Click for mode & size', 'eraser', () => {
                 this.setTool('eraser');
-                if (wasE) this.toggleMenu(this._eraseMenu, this.btnErase);
+                this.toggleMenu(this._eraseMenu, this.btnErase);
             });
             this.btnErase.classList.add('has-dropdown');
             this._eraseMenu = document.body.createDiv({ cls: 'pdf-notes-menu' });
@@ -557,10 +581,9 @@ class PdfNotesView extends ItemView {
         }
 
         if (this.plugin.settings.enabledTools.includes('text')) {
-            this.btnText = b('text', 'Text – Click again for color, size & font', 'text', () => {
-                const wasText = this.tool === 'text';
+            this.btnText = b('text', 'Text – Click for color, size & font', 'text', () => {
                 this.setTool('text');
-                if (wasText) this.toggleMenu(this._textMenu, this.btnText);
+                this.toggleMenu(this._textMenu, this.btnText);
             });
             this.btnText.classList.add('has-dropdown');
             
@@ -714,20 +737,22 @@ class PdfNotesView extends ItemView {
     setTool(t) { this.tool = t; this.updateToolbar(); }
     updateToolbar() {
         const T = this._theme || getThemeColors(this.plugin.settings.themeMode || 'dark');
-        const A = T.accent, I = T.btnBg, AF = T.accentText, IF = T.text;
+        const A = T.accent, I = 'transparent', IF = T.mutedText;
         [
-            [this.btnHand, 'scroll'], [this.btnSelect, 'select'], [this.btnLasso, 'lasso'], 
+            [this.btnHand, 'scroll'], [this.btnSelect, 'select'], [this.btnLasso, 'lasso'],
             [this.btnPen, 'pen'], [this.btnErase, 'eraser'], [this.btnText, 'text'], [this.btnImg, 'image'], [this.btnSnip, 'snip']
         ].forEach(([b, t]) => {
             if (!b || !b.style) return;
             const active = this.tool === t;
-            b.style.background = active ? A : I;
-            b.style.color = active ? AF : IF;
+            b.style.background = active ? A + '26' : I;
+            b.style.color = active ? A : IF;
+            b.style.opacity = active ? '1' : '';
         });
         if (this.btnShapes) {
             const isShape = ['rect', 'circle', 'line', 'arrow'].includes(this.tool);
-            this.btnShapes.style.background = isShape ? A : I;
-            this.btnShapes.style.color = isShape ? AF : IF;
+            this.btnShapes.style.background = isShape ? A + '26' : I;
+            this.btnShapes.style.color = isShape ? A : IF;
+            this.btnShapes.style.opacity = isShape ? '1' : '';
             const icons = { rect: '▭', circle: '○', line: '╱', arrow: '→' };
             if (isShape) {
                 if (this.plugin.settings.iconType === 'lucide') {
@@ -747,9 +772,9 @@ class PdfNotesView extends ItemView {
         }
         if (this.btnDelete) {
             const hasSelection = this.selectedElements.length > 0;
-            this.btnDelete.style.background = hasSelection ? T.deleteBg : I;
-            this.btnDelete.style.color = hasSelection ? T.deleteFg : IF;
-            this.btnDelete.style.opacity = hasSelection ? '1' : '0.4';
+            this.btnDelete.style.background = hasSelection ? T.deleteBg + '33' : 'transparent';
+            this.btnDelete.style.color = hasSelection ? T.deleteBg : IF;
+            this.btnDelete.style.opacity = hasSelection ? '1' : '';
         }
         if (this.zoomInfo) this.zoomInfo.textContent = Math.round(this.scale * 100) + '%';
         Object.values(this.pageCanvases).forEach(({ inkCanvas }) => this.setCursor(inkCanvas));
@@ -909,7 +934,7 @@ class PdfNotesView extends ItemView {
                 }
             }
             this._scheduleUnload();
-        }, { root: this.scrollEl, rootMargin: '300px 0px' });
+        }, { root: this.scrollEl, rootMargin: '150px 0px' });
 
         this.scrollEl.querySelectorAll('[data-page]').forEach(el => this._visObs.observe(el));
     }
@@ -926,7 +951,7 @@ class PdfNotesView extends ItemView {
                     this._unloadPage(num);
                 }
             }
-        }, 2000);
+        }, 500);
     }
 
     _unloadPage(num) {
@@ -935,6 +960,7 @@ class PdfNotesView extends ItemView {
         if (d.pdfCanvas) { d.pdfCanvas.width = 0; d.pdfCanvas.height = 0; }
         if (d.inkCanvas) { d.inkCanvas.width = 0; d.inkCanvas.height = 0; }
         if (d.liveCanvas) { d.liveCanvas.width = 0; d.liveCanvas.height = 0; }
+        if (d.cacheCanvas) { d.cacheCanvas.width = 0; d.cacheCanvas.height = 0; }
         delete this.pageCanvases[num];
         this._renderedPages?.delete(num);
         const wrap = d.wrap || this.scrollEl.querySelector(`[data-page="${num}"]`);
@@ -1316,33 +1342,43 @@ class PdfNotesView extends ItemView {
                 this.requestRedraw(this.activePn);
             } else if (useTool === 'pen' && this.curStroke) {
                 const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-                let added = false;
+                const d = this.pageCanvases[this.activePn];
+                const lctx = d?.liveCanvas ? d.liveCanvas.getContext('2d') : null;
                 for (const ce of coalesced) {
                     const cp = { x: (ce.clientX - r.left) / this.scale, y: (ce.clientY - r.top) / this.scale };
-                    const last = this.curStroke.points[this.curStroke.points.length - 1];
+                    const pts = this.curStroke.points;
+                    const last = pts[pts.length - 1];
                     if (Math.hypot(cp.x - last.x, cp.y - last.y) > 0.1 / this.scale) {
-                        this.curStroke.points.push(cp);
-                        added = true;
-                    }
-                }
-                
-                if (added) {
-                    const d = this.pageCanvases[this.activePn];
-                    if (d && d.liveCanvas) {
-                        const lctx = d.liveCanvas.getContext('2d');
-                        lctx.save();
-                        lctx.setTransform(1, 0, 0, 1, 0, 0);
-                        lctx.clearRect(0, 0, d.liveCanvas.width, d.liveCanvas.height);
-                        lctx.restore();
-                        
-                        lctx.save();
-                        lctx.scale(this.scale, this.scale);
-                        this.drawShape(lctx, this.curStroke);
-                        lctx.restore();
+                        if (lctx) {
+                            lctx.save();
+                            lctx.scale(this.scale, this.scale);
+                            lctx.globalAlpha = this.curStroke.opacity ?? 1.0;
+                            lctx.strokeStyle = this.curStroke.color;
+                            lctx.lineWidth = this.curStroke.width || 2;
+                            lctx.lineCap = 'round'; lctx.lineJoin = 'round';
+                            lctx.beginPath();
+                            if (pts.length >= 2) {
+                                const prev = pts[pts.length - 2];
+                                const midPL = { x: (prev.x + last.x) / 2, y: (prev.y + last.y) / 2 };
+                                const midLC = { x: (last.x + cp.x) / 2, y: (last.y + cp.y) / 2 };
+                                lctx.moveTo(midPL.x, midPL.y);
+                                lctx.quadraticCurveTo(last.x, last.y, midLC.x, midLC.y);
+                            } else {
+                                lctx.moveTo(last.x, last.y); lctx.lineTo(cp.x, cp.y);
+                            }
+                            lctx.stroke(); lctx.restore();
+                        }
+                        pts.push(cp);
                     }
                 }
             } else if (useTool === 'eraser') {
-                this.erase(this.activePn, p);
+                this._erasePending = { pn: this.activePn, pos: p };
+                if (!this._eraseRaf) {
+                    this._eraseRaf = requestAnimationFrame(() => {
+                        this._eraseRaf = null;
+                        if (this._erasePending) { this.erase(this._erasePending.pn, this._erasePending.pos); this._erasePending = null; }
+                    });
+                }
             } else if (['rect', 'circle', 'line', 'arrow'].includes(useTool) && this.shapeStart) {
                 this.curPreview = this.buildShape(this.shapeStart, p);
                 const d = this.pageCanvases[this.activePn];
@@ -1391,6 +1427,8 @@ class PdfNotesView extends ItemView {
             }
             if (this.drawing && e.pointerId === this.penId) {
                 this.drawing = false;
+                if (this._eraseRaf) { cancelAnimationFrame(this._eraseRaf); this._eraseRaf = null; }
+                if (this._erasePending) { this.erase(this._erasePending.pn, this._erasePending.pos); this._erasePending = null; }
                 const useTool = this.activeStrokeTool || this.tool;
                 if (useTool === 'select') { this.isMoving = false; this.isResizing = false; this.activeHandle = null; this.moveStart = null; }
                 else if (useTool === 'lasso' && this.lassoRect) { this.completeLasso(); this.lassoRect = null; this.lassoStart = null; this.requestRedrawAll(); }
@@ -1433,7 +1471,7 @@ class PdfNotesView extends ItemView {
         // dblclick entfernt – wird über _lastSelectClick im pointerdown gelöst
         el.addEventListener('contextmenu', e => { if (e.pointerType === 'pen') e.preventDefault(); });
         el.addEventListener('wheel', e => { if (e.ctrlKey) { e.preventDefault(); this.zoom(e.deltaY>0?-0.1:0.1); } }, { passive: false });
-        el.addEventListener('scroll', () => this.onScroll());
+        el.addEventListener('scroll', () => this.onScroll(), { passive: true });
     }
 
     requestRedraw(pn) {
@@ -2542,8 +2580,11 @@ class PdfNotesView extends ItemView {
             const d = this.pageCanvases[num];
             if (d.pdfCanvas) { d.pdfCanvas.width = 0; d.pdfCanvas.height = 0; }
             if (d.inkCanvas) { d.inkCanvas.width = 0; d.inkCanvas.height = 0; }
+            if (d.liveCanvas) { d.liveCanvas.width = 0; d.liveCanvas.height = 0; }
+            if (d.cacheCanvas) { d.cacheCanvas.width = 0; d.cacheCanvas.height = 0; }
         }
         this.pageCanvases = {};
+        this._cleanPdfBuf = null;
         this._imgCache?.clear();
         if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; await this.saveAsAnnotations(); }
         Object.values(this._observers).forEach(o => o.disconnect());

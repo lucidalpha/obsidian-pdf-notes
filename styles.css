@@ -21,21 +21,22 @@
 
 .pdf-notes-toolbar .pdf-tool-btn {
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 4px 7px;
-    transition: background 0.15s ease, color 0.15s ease;
+    padding: 5px;
+    transition: background 0.12s ease, color 0.12s ease, opacity 0.12s ease;
     min-width: 28px;
     height: 28px;
-    opacity: 0.85;
+    opacity: 0.55;
 }
 
 .pdf-notes-toolbar .pdf-tool-btn:hover {
-    opacity: 1;
-    filter: brightness(1.15);
+    opacity: 1 !important;
+    filter: none;
+    background: rgba(128, 128, 128, 0.12) !important;
 }
 
 /* Zen Mode (Fullscreen) */
