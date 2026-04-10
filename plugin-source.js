@@ -412,6 +412,10 @@ class PdfNotesView extends ItemView {
     }
 
     buildToolbar(tb) {
+        if (this._penMenu) { this._penMenu.remove(); this._penMenu = null; }
+        if (this._eraseMenu) { this._eraseMenu.remove(); this._eraseMenu = null; }
+        if (this._textMenu) { this._textMenu.remove(); this._textMenu = null; }
+        if (this._shapeMenu) { this._shapeMenu.remove(); this._shapeMenu = null; }
         const T = this._theme;
         const b = (lbl, title, idOrFn, fnOrXtra, maybeXtra = '') => {
             let id = null, fn, xtra = '';
@@ -734,7 +738,15 @@ class PdfNotesView extends ItemView {
         }
     }
 
-    setTool(t) { this.tool = t; this.updateToolbar(); }
+    hideAllMenus() {
+        document.querySelectorAll('.pdf-notes-menu').forEach(m => m.style.display = 'none');
+        if (this.floatingInput) this.finishFloatingInput();
+    }
+    setTool(t) {
+        this.hideAllMenus();
+        this.tool = t;
+        this.updateToolbar();
+    }
     updateToolbar() {
         const T = this._theme || getThemeColors(this.plugin.settings.themeMode || 'dark');
         const A = T.accent, I = 'transparent', IF = T.mutedText;
@@ -1032,6 +1044,12 @@ class PdfNotesView extends ItemView {
     // Logic for rebuilding handled by primary rebuildAll function above
 
     setupGlobalEvents() {
+        if (!this._wsEventsRegistered) {
+            this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+                if (leaf && leaf.view !== this) this.hideAllMenus();
+            }));
+            this._wsEventsRegistered = true;
+        }
         // Global Keyboard Shortcuts
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._onKeyDown = ev => {
@@ -1147,7 +1165,10 @@ class PdfNotesView extends ItemView {
                         const s = { type: 'image', data: dataUrl, x: p.x, y: p.y, w, h: w / aspect, pn: page.pn, opacity: this.opacity };
                         (this.strokes[page.pn] = this.strokes[page.pn] || []).push(s);
                         this.pushUndo(page.pn, s);
-                        this.redraw(page.pn); this.scheduleSave();
+                        this.selectedElements = [{ pn: page.pn, s }];
+                        this.updateCache(page.pn);
+                        this.redraw(page.pn);
+                        this.scheduleSave();
                     };
                     img.src = dataUrl;
                 };
@@ -2569,6 +2590,11 @@ class PdfNotesView extends ItemView {
     }
 
     async onClose() {
+        if (this._penMenu) { this._penMenu.remove(); this._penMenu = null; }
+        if (this._eraseMenu) { this._eraseMenu.remove(); this._eraseMenu = null; }
+        if (this._textMenu) { this._textMenu.remove(); this._textMenu = null; }
+        if (this._shapeMenu) { this._shapeMenu.remove(); this._shapeMenu = null; }
+        if (this.floatingInput) this.finishFloatingInput();
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         if (this._onPaste) window.removeEventListener('paste', this._onPaste);
         if (this.scrollEl && this._touchMoveGuard) this.scrollEl.removeEventListener('touchmove', this._touchMoveGuard);
