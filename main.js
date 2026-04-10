@@ -21094,7 +21094,13 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       document.querySelectorAll(".workspace-tab-header-container").forEach((h) => h.style.display = "");
     }
   }
+  hideAllMenus() {
+    document.querySelectorAll(".pdf-notes-menu").forEach((m) => m.style.display = "none");
+    if (this.floatingInput)
+      this.finishFloatingInput();
+  }
   setTool(t) {
+    this.hideAllMenus();
     this.tool = t;
     this.updateToolbar();
   }
@@ -21443,6 +21449,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
   }
   // Logic for rebuilding handled by primary rebuildAll function above
   setupGlobalEvents() {
+    if (!this._wsEventsRegistered) {
+      this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf && leaf.view !== this) {
+          this.hideAllMenus();
+        }
+      }));
+      this._wsEventsRegistered = true;
+    }
     if (this._onKeyDown)
       window.removeEventListener("keydown", this._onKeyDown);
     this._onKeyDown = (ev) => {
@@ -21568,6 +21582,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             const s = { type: "image", data: dataUrl, x: p.x, y: p.y, w, h: w / aspect, pn: page.pn, opacity: this.opacity };
             (this.strokes[page.pn] = this.strokes[page.pn] || []).push(s);
             this.pushUndo(page.pn, s);
+            this.selectedElements = [{ pn: page.pn, s }];
+            this.updateCache(page.pn);
             this.redraw(page.pn);
             this.scheduleSave();
           };
@@ -23224,6 +23240,24 @@ var PdfNotesView = class extends import_obsidian.ItemView {
   }
   async onClose() {
     var _a;
+    if (this._penMenu) {
+      this._penMenu.remove();
+      this._penMenu = null;
+    }
+    if (this._eraseMenu) {
+      this._eraseMenu.remove();
+      this._eraseMenu = null;
+    }
+    if (this._textMenu) {
+      this._textMenu.remove();
+      this._textMenu = null;
+    }
+    if (this._shapeMenu) {
+      this._shapeMenu.remove();
+      this._shapeMenu = null;
+    }
+    if (this.floatingInput)
+      this.finishFloatingInput();
     if (this._onKeyDown)
       window.removeEventListener("keydown", this._onKeyDown);
     if (this._onPaste)
