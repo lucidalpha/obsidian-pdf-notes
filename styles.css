@@ -46,7 +46,7 @@
     left: 0;
     width: 100vw !important;
     height: 100vh !important;
-    z-index: 9999;
+    z-index: 10;
 }
 
 .pdf-notes-zen-mode .view-header {
@@ -66,6 +66,38 @@
 .pdf-notes-menu {
     box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     animation: pdf-fade-in 0.15s ease-out;
+}
+
+/* Note-Embed overlay: all Obsidian markdown styles must stay inside the box */
+.pdf-notes-embed-note {
+    clip-path: inset(0) !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+}
+
+.pdf-notes-embed-note * {
+    max-width: 100% !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* Neutralize Obsidian default styles inside embed content */
+.pdf-notes-embed-note .markdown-rendered p:first-child,
+.pdf-notes-embed-note .markdown-rendered > *:first-child {
+    margin-top: 0 !important;
+}
+
+.pdf-notes-embed-note p,
+.pdf-notes-embed-note h1,
+.pdf-notes-embed-note h2,
+.pdf-notes-embed-note h3,
+.pdf-notes-embed-note h4,
+.pdf-notes-embed-note ul,
+.pdf-notes-embed-note ol,
+.pdf-notes-embed-note blockquote,
+.pdf-notes-embed-note pre {
+    margin-top: 0.15em !important;
+    margin-bottom: 0.15em !important;
 }
 
 @keyframes pdf-fade-in {
