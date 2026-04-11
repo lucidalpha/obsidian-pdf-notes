@@ -21100,7 +21100,9 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       this.finishFloatingInput();
   }
   setTool(t) {
-    this.hideAllMenus();
+    if (this.tool !== t) {
+      this.hideAllMenus();
+    }
     this.tool = t;
     this.updateToolbar();
   }
@@ -21457,6 +21459,14 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       }));
       this._wsEventsRegistered = true;
     }
+    if (this._onGlobalClick)
+      window.removeEventListener("mousedown", this._onGlobalClick);
+    this._onGlobalClick = (e) => {
+      if (!e.target.closest(".pdf-notes-menu") && !e.target.closest(".has-dropdown")) {
+        this.hideAllMenus();
+      }
+    };
+    window.addEventListener("mousedown", this._onGlobalClick);
     if (this._onKeyDown)
       window.removeEventListener("keydown", this._onKeyDown);
     this._onKeyDown = (ev) => {
@@ -23258,6 +23268,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     }
     if (this.floatingInput)
       this.finishFloatingInput();
+    if (this._onGlobalClick)
+      window.removeEventListener("mousedown", this._onGlobalClick);
     if (this._onKeyDown)
       window.removeEventListener("keydown", this._onKeyDown);
     if (this._onPaste)

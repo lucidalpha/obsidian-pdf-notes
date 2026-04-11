@@ -743,7 +743,9 @@ class PdfNotesView extends ItemView {
         if (this.floatingInput) this.finishFloatingInput();
     }
     setTool(t) {
-        this.hideAllMenus();
+        if (this.tool !== t) {
+            this.hideAllMenus();
+        }
         this.tool = t;
         this.updateToolbar();
     }
@@ -1050,6 +1052,15 @@ class PdfNotesView extends ItemView {
             }));
             this._wsEventsRegistered = true;
         }
+        // Global Click Outside
+        if (this._onGlobalClick) window.removeEventListener('mousedown', this._onGlobalClick);
+        this._onGlobalClick = (e) => {
+            if (!e.target.closest('.pdf-notes-menu') && !e.target.closest('.has-dropdown')) {
+                this.hideAllMenus();
+            }
+        };
+        window.addEventListener('mousedown', this._onGlobalClick);
+
         // Global Keyboard Shortcuts
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._onKeyDown = ev => {
@@ -2595,6 +2606,7 @@ class PdfNotesView extends ItemView {
         if (this._textMenu) { this._textMenu.remove(); this._textMenu = null; }
         if (this._shapeMenu) { this._shapeMenu.remove(); this._shapeMenu = null; }
         if (this.floatingInput) this.finishFloatingInput();
+        if (this._onGlobalClick) window.removeEventListener('mousedown', this._onGlobalClick);
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         if (this._onPaste) window.removeEventListener('paste', this._onPaste);
         if (this.scrollEl && this._touchMoveGuard) this.scrollEl.removeEventListener('touchmove', this._touchMoveGuard);
