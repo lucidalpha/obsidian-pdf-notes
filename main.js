@@ -20421,7 +20421,7 @@ var VaultNotePicker = class extends import_obsidian.FuzzySuggestModal {
     this.setPlaceholder("Search note in vault...");
   }
   getItems() {
-    return this.app.vault.getMarkdownFiles();
+    return this.app.vault.getFiles().filter((f) => f.extension === "md" || f.extension === "canvas");
   }
   getItemText(item) {
     return item.path;
@@ -21047,7 +21047,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       };
     }
     if (this.plugin.settings.enabledTools.includes("note"))
-      this.btnNote = b("note", "Insert Note Link/Embed", "note", () => {
+      this.btnNote = b("note", "Insert Vault Note \u2013 Link or Embed (double-click to open)", "note", () => {
         this.setTool("note");
         new import_obsidian.Notice("Note tool active. Click on PDF to place note.");
       });
@@ -21198,9 +21198,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     if (this.zoomInfo)
       this.zoomInfo.textContent = Math.round(this.scale * 100) + "%";
     Object.values(this.pageCanvases).forEach(({ inkCanvas }) => this.setCursor(inkCanvas));
-    if (this.tool === "select") {
-      Object.keys(this.pageCanvases).forEach((pn) => this.syncMarkdownLayer(parseInt(pn)));
-    }
+    Object.keys(this.pageCanvases).forEach((pn) => this.syncMarkdownLayer(parseInt(pn)));
+    // Note: syncMarkdownLayer skips rebuild if notes haven't changed, so frequent calls are safe
   }
   setCursor(c) {
     if (!c)
@@ -21485,6 +21484,8 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const d = this.pageCanvases[pn];
     if (!d || !d.cacheCanvas)
       return;
+    // Invalidate mdLayer cache so syncMarkdownLayer rebuilds at new positions
+    if (d._lastRenderedNotes) d._lastRenderedNotes = null;
     const ctx = d.cacheCanvas.getContext("2d");
     ctx.clearRect(0, 0, d.vp.width, d.vp.height);
     ctx.save();
@@ -21742,13 +21743,12 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             this.drawing = false;
             return;
           }
-        }
-        const linkHit = this.hitTest(page.pn, p);
-        if (linkHit && linkHit.link && linkHit.type !== "note-embed") {
-          this.app.workspace.openLinkText(linkHit.link, "", false);
-          this._lastSelectClick = null;
-          this.drawing = false;
-          return;
+          if (hit2 && hit2.link && hit2.type !== "note-embed") {
+            this.app.workspace.openLinkText(hit2.link, "", false);
+            this._lastSelectClick = null;
+            this.drawing = false;
+            return;
+          }
         }
         for (let sel of this.selectedElements) {
           if (sel.pn === page.pn && (sel.s.type === "image" || sel.s.type === "rect" || sel.s.type === "text" || sel.s.type === "note-embed")) {
@@ -22275,9 +22275,24 @@ var PdfNotesView = class extends import_obsidian.ItemView {
       }
       const notes = (this.strokes[pn] || []).filter((s) => s.type === "note-embed");
       if (notes.length === 0) {
-        d.mdLayer.empty();
+        if (d.mdLayer.children.length > 0) d.mdLayer.empty();
+        if (d._mdComp) { d._mdComp.unload(); d._mdComp = null; }
+        d._lastRenderedNotes = null;
         return;
       }
+      // Skip expensive rebuild if the same note objects are already rendered
+      if (d._lastRenderedNotes
+          && d._lastRenderedNotes.length === notes.length
+          && d._lastRenderedNotes.every((n, i) => n === notes[i])
+          && d.mdLayer.children.length > 0) {
+        return;
+      }
+      d._lastRenderedNotes = notes.slice();
+      // Clean up previous render's child components to avoid accumulation
+      if (d._mdComp) { d._mdComp.unload(); d._mdComp = null; }
+      const mdComp = new import_obsidian.Component();
+      mdComp.load();
+      d._mdComp = mdComp;
       const T = this._theme || getThemeColors(this.plugin.settings.themeMode || "dark");
       const sc = this.scale;
       d.mdLayer.empty();
@@ -22335,29 +22350,84 @@ var PdfNotesView = class extends import_obsidian.ItemView {
         // Render target: plain div that MarkdownRenderer fills
         const renderEl = body.createDiv();
         renderEl.style.cssText = `font-size:${Math.round(13 * sc)}px;line-height:1.5;color:${fg};`;
-        // Prefer reading fresh from vault; fall back to stored text
-        const renderNote = async () => {
-          let rawText = s.text || "";
-          if (s.link) {
+        // Capture in closure so async completion writes to the right element
+        const capturedEl = renderEl;
+        const capturedComp = mdComp;
+        const capturedS = s;
+        (async () => {
+          if (capturedS.link) {
             try {
-              const vaultFile = this.plugin.app.vault.getAbstractFileByPath(s.link);
+              const vaultFile = this.plugin.app.vault.getAbstractFileByPath(capturedS.link);
+              if (vaultFile && vaultFile.extension === "canvas") {
+                const raw = await this.plugin.app.vault.read(vaultFile);
+                if (!capturedEl.isConnected) return;
+                let canvasData;
+                try { canvasData = JSON.parse(raw); } catch (_) { capturedEl.textContent = raw; return; }
+                const nodes = (canvasData.nodes || []).filter((n) => n.type !== "group" || n.label);
+                if (!nodes.length) { capturedEl.textContent = "(Empty canvas)"; return; }
+                const isDark2 = this.plugin.settings.themeMode === "dark";
+                let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+                for (const n of canvasData.nodes || []) {
+                  mnX = Math.min(mnX, n.x); mnY = Math.min(mnY, n.y);
+                  mxX = Math.max(mxX, n.x + (n.width || 200)); mxY = Math.max(mxY, n.y + (n.height || 100));
+                }
+                const cw2 = mxX - mnX || 1, ch2 = mxY - mnY || 1;
+                const availW = capturedEl.parentElement?.clientWidth || (capturedS.w * sc) || 360;
+                const availH = capturedEl.parentElement?.clientHeight || ((capturedS.h - 22) * sc) || 230;
+                const cScale = Math.min(availW / cw2, availH / ch2, 1);
+                const wrap2 = capturedEl.createDiv();
+                wrap2.style.cssText = `position:relative;width:${Math.round(cw2 * cScale)}px;height:${Math.round(ch2 * cScale)}px;`;
+                for (const n of canvasData.nodes || []) {
+                  const nx = Math.round((n.x - mnX) * cScale), ny = Math.round((n.y - mnY) * cScale);
+                  const nw = Math.round((n.width || 200) * cScale), nh = Math.round((n.height || 100) * cScale);
+                  const nEl = wrap2.createDiv();
+                  nEl.style.cssText = `position:absolute;left:${nx}px;top:${ny}px;width:${nw}px;height:${nh}px;box-sizing:border-box;overflow:hidden;border-radius:4px;font-size:${Math.max(8, Math.round(11 * cScale))}px;`;
+                  if (n.type === "group") {
+                    nEl.style.cssText += `border:1.5px dashed ${isDark2 ? "#555" : "#bbb"};background:transparent;`;
+                    if (n.label) { const lbl = nEl.createDiv(); lbl.style.cssText = `padding:2px 4px;color:${isDark2 ? "#aaa" : "#666"};font-weight:bold;`; lbl.textContent = n.label; }
+                  } else if (n.type === "text") {
+                    nEl.style.cssText += `background:${isDark2 ? "#1e1e2e" : "#fff"};border:1px solid ${isDark2 ? "#444" : "#ddd"};padding:4px;`;
+                    const mdEl2 = nEl.createDiv();
+                    try { await import_obsidian.MarkdownRenderer.render(this.plugin.app, n.text || "", mdEl2, capturedS.link || "", capturedComp); }
+                    catch (_) { mdEl2.textContent = n.text || ""; }
+                  } else if (n.type === "file") {
+                    const fname2 = (n.file || "").split("/").pop().replace(/\.[^.]+$/, "");
+                    nEl.style.cssText += `background:${isDark2 ? "#1a1a2e" : "#f0f4ff"};border:1px solid ${isDark2 ? "#334" : "#aabfe0"};display:flex;align-items:center;justify-content:center;text-align:center;padding:4px;color:${isDark2 ? "#89b4fa" : "#2563eb"};`;
+                    nEl.textContent = "📄 " + fname2;
+                  } else if (n.type === "link") {
+                    nEl.style.cssText += `background:${isDark2 ? "#1a2e1a" : "#f0fff4"};border:1px solid ${isDark2 ? "#344" : "#90ccaa"};display:flex;align-items:center;justify-content:center;text-align:center;padding:4px;color:${isDark2 ? "#a6e3a1" : "#166534"};`;
+                    nEl.textContent = "🔗 " + (n.url || "Link");
+                  }
+                }
+                return;
+              }
               if (vaultFile && vaultFile.extension === "md") {
-                rawText = await this.plugin.app.vault.read(vaultFile);
+                const rawText = await this.plugin.app.vault.read(vaultFile);
+                if (!capturedEl.isConnected) return;
+                const mdText = rawText.replace(/^---[\s\S]*?---\s*\n?/, "").trim();
+                try {
+                  await import_obsidian.MarkdownRenderer.render(this.plugin.app, mdText, capturedEl, capturedS.link || "", capturedComp);
+                  const first = capturedEl.querySelector("p,h1,h2,h3,h4,h5,h6,ul,ol,blockquote,pre");
+                  if (first) first.style.marginTop = "0";
+                } catch (renderErr) {
+                  console.error("[PDF.notes] MarkdownRenderer failed", renderErr);
+                  if (capturedEl.isConnected) capturedEl.textContent = mdText;
+                }
+                return;
               }
             } catch (_) {}
           }
-          const mdText = rawText.replace(/^---[\s\S]*?---\s*\n?/, "").trim();
+          if (!capturedEl.isConnected) return;
+          const rawText2 = (capturedS.text || "").replace(/^---[\s\S]*?---\s*\n?/, "").trim();
           try {
-            await import_obsidian.MarkdownRenderer.render(this.plugin.app, mdText, renderEl, s.link || "", this);
-            // Tighten margins on first element so content starts flush
-            const first = renderEl.querySelector("p,h1,h2,h3,h4,h5,h6,ul,ol,blockquote,pre");
-            if (first) first.style.marginTop = "0";
+            await import_obsidian.MarkdownRenderer.render(this.plugin.app, rawText2, capturedEl, capturedS.link || "", capturedComp);
+            const first2 = capturedEl.querySelector("p,h1,h2,h3,h4,h5,h6,ul,ol,blockquote,pre");
+            if (first2) first2.style.marginTop = "0";
           } catch (renderErr) {
             console.error("[PDF.notes] MarkdownRenderer failed", renderErr);
-            renderEl.textContent = mdText;
+            if (capturedEl.isConnected) capturedEl.textContent = rawText2;
           }
-        };
-        renderNote();
+        })();
       }
     } catch (e) {
       console.error("[PDF.notes] syncMarkdownLayer error", e);
@@ -23044,7 +23114,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
     const stats = { strokes: 0, text: 0, images: 0, notes: 0 };
     try {
       const lib = es_exports;
-      const { PDFDocument: PDFDocument2, rgb: rgb2, PDFName: PDFName2, PDFArray: PDFArray2, PDFDict: PDFDict2, PDFString: PDFString2, PDFHexString: PDFHexString2, LineCapStyle: LineCapStyle2, LineJoinStyle: LineJoinStyle2 } = lib;
+      const { PDFDocument: PDFDocument2, rgb: rgb2, PDFName: PDFName2, PDFArray: PDFArray2, PDFDict: PDFDict2, PDFString: PDFString2, PDFHexString: PDFHexString2, LineCapStyle: LineCapStyle2, LineJoinStyle: LineJoinStyle2, StandardFonts: StandardFonts2 } = lib;
       const buf = await this.app.vault.adapter.readBinary(this.pdfFile.path);
       const doc = await PDFDocument2.load(buf, { ignoreEncryption: true });
       const pages = doc.getPages();
@@ -23105,7 +23175,99 @@ var PdfNotesView = class extends import_obsidian.ItemView {
               console.error("[PDF.notes] Image flatten error", e);
             }
           } else if (s.type === "note-embed") {
-            // Note-embeds are kept as editable annotations and not flattened into page content
+            try {
+              const font = await doc.embedFont(StandardFonts2.Helvetica);
+              const boldFont = await doc.embedFont(StandardFonts2.HelveticaBold);
+              const { r: ar, g: ag, b: ab } = hexRgb(s.color && s.color !== "#000000" ? s.color : "#2563eb");
+              const accentCol = rgb2(ar, ag, ab);
+              const bgCol = rgb2(0.98, 0.98, 0.98);
+              const titleBgCol = rgb2(ar * 0.15 + 0.85, ag * 0.15 + 0.85, ab * 0.15 + 0.85);
+              const textCol = rgb2(0.15, 0.15, 0.15);
+              const bx = s.x, bTop = pH - s.y, bw = s.w, bh = s.h;
+              const by = bTop - bh;
+              const titleH2 = 18;
+              const pad = 5;
+              const fSize = 9;
+              const lineH2 = fSize * 1.5;
+              pg.drawRectangle({ x: bx, y: by, width: bw, height: bh, color: bgCol, borderColor: accentCol, borderWidth: 1.5, opacity: 1 });
+              pg.drawRectangle({ x: bx, y: bTop - titleH2, width: bw, height: titleH2, color: titleBgCol, opacity: 1 });
+              const titleStr = (s.title || "Note").substring(0, Math.floor(bw / 7));
+              pg.drawText(titleStr, { x: bx + pad, y: bTop - titleH2 + 4, size: 11, font: boldFont, color: accentCol });
+              const isCanvasFile = s.link && s.link.endsWith(".canvas");
+              let rawText;
+              if (isCanvasFile) {
+                try {
+                  const canvasJson = JSON.parse(s.text || "{}");
+                  const textParts = (canvasJson.nodes || []).map((n) => {
+                    if (n.type === "text") return n.text || "";
+                    if (n.type === "file") return "📄 " + ((n.file || "").split("/").pop().replace(/\.[^.]+$/, ""));
+                    if (n.type === "group" && n.label) return "[ " + n.label + " ]";
+                    if (n.type === "link") return "🔗 " + (n.url || "");
+                    return "";
+                  }).filter(Boolean);
+                  rawText = textParts.join("\n");
+                } catch (_) { rawText = s.text || ""; }
+              } else {
+                rawText = (s.text || "").replace(/^---[\s\S]*?---\s*\n?/, "").trim();
+              }
+              const stripped = rawText
+                .replace(/#{1,6}\s+(.+)/gm, (_, t) => t.toUpperCase())
+                .replace(/\*\*(.+?)\*\*/g, "$1")
+                .replace(/\*(.+?)\*/g, "$1")
+                .replace(/`(.+?)`/g, "$1")
+                .replace(/\[\[(.+?)(?:\|.+?)?\]\]/g, "[$1]")
+                .replace(/\[(.+?)\]\(.+?\)/g, "$1")
+                .replace(/^[-*+]\s+/gm, "• ")
+                .replace(/^\d+\.\s+/gm, (m) => m);
+              const contentH = bh - titleH2 - pad * 2;
+              const maxLines2 = Math.floor(contentH / lineH2);
+              const allLines = stripped.split("\n");
+              let drawn = 0;
+              for (let li = 0; li < allLines.length && drawn < maxLines2; li++) {
+                const line = allLines[li].trim();
+                if (!line) { drawn++; continue; }
+                const maxChars = Math.max(1, Math.floor(bw / (fSize * 0.52)));
+                const words = line.split(" ");
+                let cur = "";
+                for (const w of words) {
+                  if ((cur + " " + w).trim().length > maxChars) {
+                    if (drawn >= maxLines2) break;
+                    const ly = bTop - titleH2 - pad - fSize - drawn * lineH2;
+                    pg.drawText(cur.trim(), { x: bx + pad, y: ly, size: fSize, font, color: textCol });
+                    drawn++;
+                    cur = w;
+                  } else {
+                    cur = cur ? cur + " " + w : w;
+                  }
+                }
+                if (cur.trim() && drawn < maxLines2) {
+                  const ly = bTop - titleH2 - pad - fSize - drawn * lineH2;
+                  pg.drawText(cur.trim(), { x: bx + pad, y: ly, size: fSize, font, color: textCol });
+                  drawn++;
+                }
+              }
+            } catch (ne) {
+              console.error("[PDF.notes] Note-embed flatten error", ne);
+            }
+            // Re-add an invisible annotation so the link remains functional in PDF.notes
+            try {
+              let annots = pg.node.lookupMaybe(PDFName2.of("Annots"), PDFArray2);
+              if (!annots) {
+                annots = doc.context.obj([]);
+                pg.node.set(PDFName2.of("Annots"), annots);
+              }
+              const rect2 = [s.x, pH - s.y - s.h, s.x + s.w, pH - s.y];
+              const invisAnnot = {
+                Type: "Annot",
+                Subtype: "Square",
+                Rect: rect2,
+                C: [],       // no color → no visible border
+                F: 2,        // Hidden flag: invisible in all other PDF viewers
+                NM: PDFString2.of(`pdfnotes-${stats.notes}`),
+                Contents: PDFString2.of(this.shapeToContents(s, pW, pH))
+              };
+              annots.push(doc.context.register(doc.context.obj(invisAnnot)));
+            } catch (_) {}
             stats.notes++;
           } else if (!s.type || s.type === "stroke") {
             stats.strokes++;
