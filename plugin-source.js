@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = {
     newPdfFolder: '',
     allowTouch: true,
     penSideButtonTool: 'eraser',
-    enabledTools: ['nav', 'zoom', 'scroll', 'select', 'lasso', 'pen', 'eraser', 'text', 'image', 'snip', 'paste', 'delete', 'rect', 'circle', 'line', 'arrow', 'undo', 'redo', 'zen', 'insert', 'remove', 'flatten'],
+    enabledTools: ['nav', 'zoom', 'scroll', 'select', 'lasso', 'pen', 'eraser', 'text', 'link', 'image', 'snip', 'paste', 'delete', 'rect', 'circle', 'line', 'arrow', 'undo', 'redo', 'zen', 'insert', 'remove', 'flatten'],
     textFont: 'Inter',
     textSize: 16,
     iconType: 'lucide',
@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS = {
         image: '🖼️', snip: '✂️', paste: '📋', delete: '❌',
         rect: '▭', circle: '○', line: '╱', arrow: '→',
         undo: '↩', redo: '↪', zen: '⛶', insert: '📄', remove: '🗑️',
-        save: '💾', flatten: '🔥'
+        save: '💾', flatten: '🔥', link: '🔗'
     }
 };
 
@@ -41,7 +41,7 @@ const LUCIDE_ICONS = {
     rect: 'square', circle: 'circle', line: 'minus', arrow: 'arrow-up-right',
     prev: 'chevron-left', next: 'chevron-right', zoomOut: 'minus-circle', zoomIn: 'plus-circle',
     undo: 'undo-2', redo: 'redo-2', insert: 'file-plus', remove: 'file-minus', zen: 'maximize',
-    save: 'save', flatten: 'flame'
+    save: 'save', flatten: 'flame', link: 'link'
 };
 
 function getThemeColors(mode) {
@@ -81,6 +81,19 @@ class VaultImagePicker extends FuzzySuggestModal {
             if (this.folder && !f.path.startsWith(this.folder + '/')) return false;
             return true;
         });
+    }
+    getItemText(item) { return item.path; }
+    onChooseItem(item) { this.onChoose(item); }
+}
+
+class VaultFilePicker extends FuzzySuggestModal {
+    constructor(app, onChoose) {
+        super(app);
+        this.onChoose = onChoose;
+        this.setPlaceholder('Search page in vault...');
+    }
+    getItems() {
+        return this.app.vault.getMarkdownFiles();
     }
     getItemText(item) { return item.path; }
     onChooseItem(item) { this.onChoose(item); }
@@ -652,6 +665,24 @@ class PdfNotesView extends ItemView {
             otS.min = '1'; otS.max = '100'; otS.value = String(Math.round(this.opacity * 100));
             otS.oninput = e => { this.opacity = parseInt(e.target.value) / 100; otV.textContent = Math.round(this.opacity * 100) + '%'; this.setTool('text'); };
         }
+        if (this.plugin.settings.enabledTools.includes('link')) {
+            this.btnLink = b('link', 'Link Selection to Vault Page', 'link', () => {
+                if (this.selectedElements.length === 0) {
+                    new Notice('Please select elements first to link them.');
+                    return;
+                }
+                new VaultFilePicker(this.app, (file) => {
+                    this.selectedElements.forEach(sel => {
+                        sel.s.link = file.path;
+                    });
+                    const pns = new Set(this.selectedElements.map(sel => sel.pn));
+                    pns.forEach(pn => this.updateCache(pn));
+                    this.requestRedrawAll();
+                    this.scheduleSave();
+                    new Notice(`Linked to ${file.basename}`);
+                }).open();
+            });
+        }
         if (this.plugin.settings.enabledTools.includes('image')) this.btnImg = b('image', 'Insert Image', 'image', () => this.setTool('image'));
         if (this.plugin.settings.enabledTools.includes('snip')) this.btnSnip = b('snip', 'Snip / Screenshot', 'snip', () => this.setTool('snip'));
         if (this.plugin.settings.enabledTools.includes('paste')) b('paste', 'Paste from Clipboard', () => this.pasteFromClipboard());
@@ -754,7 +785,7 @@ class PdfNotesView extends ItemView {
         const A = T.accent, I = 'transparent', IF = T.mutedText;
         [
             [this.btnHand, 'scroll'], [this.btnSelect, 'select'], [this.btnLasso, 'lasso'],
-            [this.btnPen, 'pen'], [this.btnErase, 'eraser'], [this.btnText, 'text'], [this.btnImg, 'image'], [this.btnSnip, 'snip']
+            [this.btnPen, 'pen'], [this.btnErase, 'eraser'], [this.btnText, 'text'], [this.btnLink, 'link'], [this.btnImg, 'image'], [this.btnSnip, 'snip']
         ].forEach(([b, t]) => {
             if (!b || !b.style) return;
             const active = this.tool === t;
@@ -1219,16 +1250,31 @@ class PdfNotesView extends ItemView {
                     && (now - this._lastSelectClick.time < 400)
                     && Math.hypot(p.x - this._lastSelectClick.x, p.y - this._lastSelectClick.y) < 10;
                 this._lastSelectClick = { time: now, x: p.x, y: p.y, pn: page.pn };
+                let hit = this.hitTest(page.pn, p);
+                const alreadySelected = hit && this.selectedElements.length === 1 && this.selectedElements[0].s === hit;
 
                 if (isDblClick) {
-                    const hit = this.hitTest(page.pn, p);
-                    if (hit && hit.type === 'text') {
-                        this._lastSelectClick = null;
-                        this.startEditingText(hit, page.pn, e);
-                        this.drawing = false;
-                        return;
+                    if (hit) {
+                        if (hit.link && !e.altKey) {
+                            // Link öffnen bei Doppel-Klick (ohne Alt)
+                            this.app.workspace.openLinkText(hit.link, '', true);
+                            this._lastSelectClick = null;
+                            this.drawing = false;
+                            return;
+                        } else if (hit.type === 'text') {
+                            // Text bearbeiten bei Doppel-Klick (oder Alt + Doppel-Klick bei Links)
+                            this._lastSelectClick = null;
+                            this.startEditingText(hit, page.pn, e);
+                            this.drawing = false;
+                            return;
+                        }
                     }
+                } else if (alreadySelected && hit.type === 'text') {
+                    // Merken für Single-Click-Edit (wie Dateiumbenennung)
+                    this._editCandidate = { s: hit, time: now, x: p.x, y: p.y };
                 }
+
+                // Link öffnen Logik entfernt (jetzt per Doppel-Klick oben)
 
                 // Check resize handles first
                 for (let sel of this.selectedElements) {
@@ -1250,7 +1296,7 @@ class PdfNotesView extends ItemView {
                         }
                     }
                 }
-                const hit = this.hitTest(page.pn, p);
+                hit = this.hitTest(page.pn, p);
                 if (hit) {
                     if (!this.selectedElements.some(sel => sel.s === hit)) {
                         const oldPns = new Set(this.selectedElements.map(sel => sel.pn));
@@ -1459,6 +1505,25 @@ class PdfNotesView extends ItemView {
             }
             if (this.drawing && e.pointerId === this.penId) {
                 this.drawing = false;
+                
+                // Link öffnen (entfernt, da jetzt per Doppel-Klick in onS)
+                this._linkCandidate = null;
+
+                // Single-Click Edit für bereits selektierten Text
+                if (this._editCandidate) {
+                    const canvas = document.querySelector(`[data-page="${this.activePn}"] canvas:last-child`);
+                    if (canvas) {
+                        const r = canvas.getBoundingClientRect();
+                        const p = { x: (e.clientX - r.left) / this.scale, y: (e.clientY - r.top) / this.scale };
+                        const dist = Math.hypot(p.x - this._editCandidate.x, p.y - this._editCandidate.y);
+                        // Wenn es ein Klick war und nicht der erste Klick zur Selektion (leicht verzögert oder bereits selektiert)
+                        if (dist < 3 && (Date.now() - this._editCandidate.time < 500)) {
+                            this.startEditingText(this._editCandidate.s, this.activePn, e);
+                        }
+                    }
+                    this._editCandidate = null;
+                }
+
                 if (this._eraseRaf) { cancelAnimationFrame(this._eraseRaf); this._eraseRaf = null; }
                 if (this._erasePending) { this.erase(this._erasePending.pn, this._erasePending.pos); this._erasePending = null; }
                 const useTool = this.activeStrokeTool || this.tool;
@@ -1585,6 +1650,22 @@ class PdfNotesView extends ItemView {
             lines.forEach((line, i) => {
                 ctx.fillText(line, s.x, s.y + (i * sz * 1.2));
             });
+            if (s.link) {
+                // Link-Indikator: Unterstreichung und kleines Icon
+                const maxLen = Math.max(...lines.map(l => l.length));
+                const tw = maxLen * sz * 0.6;
+                const th = lines.length * sz * 1.2;
+                ctx.beginPath();
+                ctx.moveTo(s.x, s.y + th - 2);
+                ctx.lineTo(s.x + tw, s.y + th - 2);
+                ctx.setLineDash([2, 1]);
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                ctx.setLineDash([]);
+                // Kleiner Punkt oder Icon
+                ctx.font = `${Math.max(8, sz/2)}px serif`;
+                ctx.fillText('🔗', s.x + tw + 2, s.y);
+            }
         } else if (s.type === 'image') {
             if (!this._imgCache) this._imgCache = new Map();
             let img = this._imgCache.get(s.data);
@@ -3062,6 +3143,12 @@ class PdfNotesPlugin extends Plugin {
         Object.entries(DEFAULT_SETTINGS.toolIcons).forEach(([k, v]) => {
             if (!this.settings.toolIcons[k]) this.settings.toolIcons[k] = v;
         });
+
+        // Migration: Ensure 'link' is in enabledTools if it's missing
+        if (this.settings.enabledTools && !this.settings.enabledTools.includes('link')) {
+            this.settings.enabledTools.push('link');
+            await this.saveSettings();
+        }
         
         this.registerView(VIEW_TYPE, leaf => new PdfNotesView(leaf, this));
         this.addSettingTab(new PdfNotesSettingTab(this.app, this));
