@@ -1,6 +1,6 @@
 {
   "name": "pdf-notes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Annotate PDFs with smooth ink drawings and shape tools directly within Obsidian.",
   "main": "main.js",
   "scripts": {

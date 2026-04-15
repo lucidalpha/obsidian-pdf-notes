@@ -1,7 +1,7 @@
 {
   "id": "pdf-notes",
   "name": "PDF.notes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.0.0",
   "description": "Annotate PDFs with smooth ink drawings and shape tools.",
   "author": "Awin",
