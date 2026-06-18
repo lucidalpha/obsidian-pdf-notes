@@ -20442,27 +20442,48 @@ function hexRgb(hex) {
   const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return r ? { r: parseInt(r[1], 16) / 255, g: parseInt(r[2], 16) / 255, b: parseInt(r[3], 16) / 255 } : { r: 0, g: 0, b: 0 };
 }
-function smoothPoints(rawPts, factor = 10) {
-  if (!rawPts || rawPts.length < 3)
-    return rawPts;
-  const out = [rawPts[0]];
-  for (let i = 1; i < rawPts.length - 1; i++) {
-    const p0 = rawPts[i - 1], p1 = rawPts[i], p2 = rawPts[i + 1];
-    const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
-    const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
-    const endX = i === rawPts.length - 2 ? p2.x : (p1.x + p2.x) / 2;
-    const endY = i === rawPts.length - 2 ? p2.y : (p1.y + p2.y) / 2;
-    for (let t = 1; t <= factor; t++) {
-      const f = t / factor;
-      const x = (1 - f) * (1 - f) * startX + 2 * (1 - f) * f * p1.x + f * f * endX;
-      const y = (1 - f) * (1 - f) * startY + 2 * (1 - f) * f * p1.y + f * f * endY;
-      out.push({ x, y });
-    }
+var INK_EPSILON = 0.15;
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+function simplifyPoints(points, epsilon = 0.4) {
+  if (!points || points.length < 3)
+    return points;
+  const pre = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const q = pre[pre.length - 1];
+    if (Math.hypot(points[i].x - q.x, points[i].y - q.y) >= epsilon)
+      pre.push(points[i]);
   }
-  const last2 = rawPts[rawPts.length - 1];
-  if (Math.hypot(last2.x - out[out.length - 1].x, last2.y - out[out.length - 1].y) > 0.1)
-    out.push(last2);
-  return out;
+  const lastPt = points[points.length - 1];
+  if (pre[pre.length - 1] !== lastPt)
+    pre.push(lastPt);
+  if (pre.length < 3)
+    return pre;
+  const rdp = (pts) => {
+    const a = pts[0], b = pts[pts.length - 1];
+    const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    let dmax = 0, idx = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p = pts[i];
+      let d;
+      if (len2 === 0)
+        d = Math.hypot(p.x - a.x, p.y - a.y);
+      else {
+        const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+        d = Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+      }
+      if (d > dmax) {
+        dmax = d;
+        idx = i;
+      }
+    }
+    if (dmax > epsilon) {
+      return rdp(pts.slice(0, idx + 1)).slice(0, -1).concat(rdp(pts.slice(idx)));
+    }
+    return [a, b];
+  };
+  return rdp(pre);
 }
 function getBounds(pts) {
   if (!pts || pts.length === 0)
@@ -21876,7 +21897,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           const cp = { x: (ce.clientX - r.left) / this.scale, y: (ce.clientY - r.top) / this.scale };
           const pts = this.curStroke.points;
           const last2 = pts[pts.length - 1];
-          if (Math.hypot(cp.x - last2.x, cp.y - last2.y) > 0.1 / this.scale) {
+          if (Math.hypot(cp.x - last2.x, cp.y - last2.y) > Math.max(0.08, 0.1 / this.scale)) {
             if (lctx) {
               lctx.save();
               lctx.scale(this.scale, this.scale);
@@ -22864,7 +22885,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
             if (!s.points || s.points.length < 2)
               continue;
             const rawPts = s.points.map((p) => ({ x: p.x, y: pdfH - p.y }));
-            const pts = smoothPoints(rawPts, 5);
+            const pts = simplifyPoints(rawPts, INK_EPSILON);
             const b2 = getBounds(pts);
             rect = [b2.minX - 4, b2.minY - 4, b2.maxX + 4, b2.maxY + 4];
             flat = pts.flatMap((p) => [p.x, p.y]);
@@ -22872,6 +22893,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           const { r, g: g2, b } = hexRgb(s.color || "#000000");
           const lw = Math.max(0.5, s.lineWidth || s.width || 2);
           const op = (_a = s.opacity) != null ? _a : 1;
+          flat = flat.map(round2);
           const annotObj = {
             Type: "Annot",
             Subtype: "Ink",
@@ -22972,7 +22994,7 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           } else if (!s.type || s.type === "stroke") {
             if (!s.points || s.points.length < 2)
               continue;
-            const pts = s.points;
+            const pts = simplifyPoints(s.points, INK_EPSILON);
             let path = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
             if (pts.length === 2) {
               path += ` L ${pts[1].x.toFixed(2)} ${pts[1].y.toFixed(2)}`;
@@ -23167,7 +23189,10 @@ var PdfNotesView = class extends import_obsidian.ItemView {
           }
         }
         if (strippedAnnots) {
-          const cleanBuf = await doc.save();
+          const gcDoc = await PDFDocument2.create();
+          const copied = await gcDoc.copyPages(doc, doc.getPageIndices());
+          copied.forEach((p) => gcDoc.addPage(p));
+          const cleanBuf = await gcDoc.save();
           u8ForPdfJs = new Uint8Array(cleanBuf.buffer, cleanBuf.byteOffset, cleanBuf.byteLength);
         }
         console.log("[PDF.notes] Annotations loaded:", Object.values(this.strokes).flat().length, "strokes");
